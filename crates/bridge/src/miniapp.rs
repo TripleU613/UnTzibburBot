@@ -75,7 +75,38 @@ pub fn verify_init_data(init_data: &str, bot_token: &str, max_age_secs: i64) -> 
         .find(|(k, _)| k == "user")
         .map(|(_, v)| v.clone())
         .ok_or_else(|| anyhow!("initData without user"))?;
-    Ok(serde_json::from_str(&user_json)?)
+    // WebApp initData carries a WebAppUser (no `is_bot`, extra fields like `photo_url` and
+    // `allows_write_to_pm`); fill in what the Bot API user type requires.
+    let mut value: serde_json::Value = serde_json::from_str(&user_json)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.entry("is_bot")
+            .or_insert(serde_json::Value::Bool(false));
+    }
+    Ok(serde_json::from_value(value)?)
+}
+
+/// Sign `pairs` the way Telegram signs WebApp initData (for tests and tooling).
+#[cfg(test)]
+pub fn sign_init_data(pairs: &[(&str, &str)], bot_token: &str) -> String {
+    let mut sorted: Vec<(&str, &str)> = pairs.to_vec();
+    sorted.sort();
+    let check = sorted
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut secret = Hmac::<Sha256>::new_from_slice(b"WebAppData").unwrap();
+    secret.update(bot_token.as_bytes());
+    let secret = secret.finalize().into_bytes();
+    let mut mac = Hmac::<Sha256>::new_from_slice(&secret).unwrap();
+    mac.update(check.as_bytes());
+    let hash = hex::encode(mac.finalize().into_bytes());
+    let mut out = url::form_urlencoded::Serializer::new(String::new());
+    for (k, v) in pairs {
+        out.append_pair(k, v);
+    }
+    out.append_pair("hash", &hash);
+    out.finish()
 }
 
 #[derive(Deserialize)]
@@ -247,3 +278,27 @@ $('verify').onclick=async()=>{$('err').textContent='';$('verify').disabled=true;
  $('err').className='ok';$('err').textContent='Connected as '+j.display_name+'. You can close this window.';if(tg)setTimeout(()=>tg.close(),1500);
 }catch(e){$('err').textContent=e.message}finally{$('verify').disabled=false}};
 </script></body></html>"##;
+
+#[cfg(test)]
+mod init_data_tests {
+    use super::*;
+
+    #[test]
+    fn real_shaped_webapp_user_parses() {
+        let now = chrono::Utc::now().timestamp().to_string();
+        let user = r#"{"id":7135356557,"first_name":"Test","last_name":"User","username":"tester","language_code":"en","allows_write_to_pm":true,"photo_url":"https://t.me/i/userpic/320/x.jpg"}"#;
+        let init = sign_init_data(
+            &[
+                ("query_id", "AAHdF6IQAAAAAN0XohDhrOrc"),
+                ("user", user),
+                ("auth_date", &now),
+                ("signature", "abc"),
+            ],
+            "123:token",
+        );
+        let u = verify_init_data(&init, "123:token", 3600).unwrap();
+        assert_eq!(u.id.0, 7135356557);
+        assert!(!u.is_bot);
+        assert!(verify_init_data(&init, "123:other", 3600).is_err());
+    }
+}
