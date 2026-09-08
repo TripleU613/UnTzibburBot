@@ -67,10 +67,10 @@ pub async fn card(
         if g.muted { " · muted" } else { "" }
     );
     if g.kind == GroupKind::System {
-        text.push_str("System announcements thread — read-only.\n");
+        text.push_str("Announcements from Tzibbur. Read only.\n");
     } else {
         text.push_str(&format!(
-            "Who can post: <b>{}</b> · Who can add members: <b>{}</b>\nMax message: {} characters",
+            "Posting: <b>{}</b>. Adding members: <b>{}</b>. Messages up to {} characters.",
             perm_label(&g.who_can_post),
             perm_label(&g.who_can_add_members),
             max_len
@@ -81,7 +81,7 @@ pub async fn card(
         text.push('\n');
         if g.member_count < min_members {
             text.push_str(&format!(
-                "\nTzibbur requires <b>{min_members}</b> members before anyone can post here. Add {} more with <b>Add members</b>.\n",
+                "\nTzibbur needs <b>{min_members}</b> members before anyone can post. Add {} more.\n",
                 min_members - g.member_count
             ));
         }
@@ -299,10 +299,7 @@ pub async fn on_callback(
                 "add" => {
                     dialogue.update(State::AwaitAddPhones { conv_id }).await?;
                     let mut r = bot
-                        .send_message(
-                            chat,
-                            "Send the phone numbers to add (comma-separated), or /cancel.",
-                        )
+                        .send_message(chat, "Send the phone numbers to add, or /cancel.")
                         .parse_mode(HTML);
                     if let Some(t) = thread {
                         r = r.message_thread_id(t);
@@ -312,12 +309,7 @@ pub async fn on_callback(
                 }
                 "rename" => {
                     dialogue.update(State::AwaitRename { conv_id }).await?;
-                    let mut r = bot
-                        .send_message(
-                            chat,
-                            "Send the new group name (max 100 characters), or /cancel.",
-                        )
-                        .parse_mode(HTML);
+                    let mut r = bot.send_message(chat, "New name?").parse_mode(HTML);
                     if let Some(t) = thread {
                         r = r.message_thread_id(t);
                     }
@@ -385,7 +377,7 @@ pub async fn on_callback(
                         chat,
                         thread,
                         format!(
-                            "Delete <b>{}</b> for all members? This cannot be undone.",
+                            "Delete <b>{}</b> for everyone? This cannot be undone.",
                             escape_html(conv.name.as_deref().unwrap_or("this group"))
                         ),
                         kb,
@@ -482,12 +474,12 @@ pub async fn on_rename(
                 }
             }
         }
-        TextValidation::Empty => reply(&bot, &msg, "Send the new name, or /cancel.").await,
+        TextValidation::Empty => reply(&bot, &msg, "New name?").await,
         TextValidation::TooLong { count, max } => {
             reply(
                 &bot,
                 &msg,
-                format!("Too long ({count} characters, max {max})."),
+                format!("Too long: {count} characters, the limit is {max}."),
             )
             .await
         }
@@ -508,18 +500,13 @@ pub async fn on_add_phones(
         &app.shared.cfg.default_region,
     );
     if phones.is_empty() {
-        return reply(
-            &bot,
-            &msg,
-            "Send phone numbers like <code>212-736-5000, +972 50 123 4567</code>, or /cancel.",
-        )
-        .await;
+        return reply(&bot, &msg, "Send phone numbers, or /cancel.").await;
     }
     dialogue.exit().await?;
     let mut report = String::new();
     if !bad.is_empty() {
         report.push_str(&format!(
-            "Skipping (not valid numbers): {}\n",
+            "Not phone numbers: {}\n",
             escape_html(&bad.join(", "))
         ));
     }

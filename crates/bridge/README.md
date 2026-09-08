@@ -55,6 +55,17 @@ Directus UI: http://localhost:8055.
 
 Without Docker: `cargo run -p tzibbur-telegram-bridge` with the same variables exported.
 
+## Durability: what happens when something goes down
+
+Tzibbur is the source of truth for messages; nothing the bridge stores is needed to recover them.
+
+| Component | Holds | If it is down | If it is lost |
+|---|---|---|---|
+| Postgres/Directus (`db` volume) | users, connected accounts (encrypted sessions), topic mappings, message-id mappings | The bridge waits at startup; while running, forwarding pauses and resumes. A 45-second flush re-forwards anything cached but not yet delivered. | Users reconnect with `/connect` and get fresh topics. Daily `pg_dump` in the `backups` volume (14 days) restores mappings. |
+| Bridge `/data` (per-account SQLite) | sync cache: ids, seqs, message text until delivered | Nothing; it is local to the container. | Rebuilt from Tzibbur on the next connect. |
+| Telegram | the topics | Sends fail and are retried by the flush. | A deleted topic is recreated on the next message. |
+| Tzibbur | everything | Reconnect with backoff; the outbox retries sends. | Out of scope. |
+
 ## Deploying (how the public bot runs)
 
 `.github/workflows/deploy.yml` builds the image on GitHub, pushes it to GHCR, joins the

@@ -201,8 +201,18 @@ impl AccountRuntime {
         let mut outbox = self.sync.outbox().subscribe();
         self.sync.start();
         tracing::info!(account = self.account_id, "runtime started");
+        // Forwarding progress lives in Directus. If Directus or Telegram was unavailable when a
+        // message arrived, its text is still in the cache: flush such leftovers regularly.
+        let mut flush = tokio::time::interval(std::time::Duration::from_secs(45));
+        flush.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        flush.tick().await;
         loop {
             tokio::select! {
+                _ = flush.tick() => {
+                    if let Err(e) = self.flush_unforwarded().await {
+                        tracing::debug!(account = self.account_id, error = %e, "flush skipped");
+                    }
+                }
                 cmd = rx.recv() => match cmd {
                     Some(Cmd::SessionInvalidated) => {
                         tracing::warn!(account = self.account_id, "session invalidated (401)");
@@ -280,9 +290,12 @@ impl AccountRuntime {
                     .await?
                 {
                     if !conv.closed {
-                        self.send_note(&conv, "This group was deleted or you were removed from it. The topic is now closed.")
-                            .await
-                            .ok();
+                        self.send_note(
+                            &conv,
+                            "This group is gone or you were removed. Topic closed.",
+                        )
+                        .await
+                        .ok();
                         if let Some(t) = conv.topic_id() {
                             let _ = self
                                 .shared
@@ -302,7 +315,7 @@ impl AccountRuntime {
             }
             SyncEvent::UpdateRequired => {
                 self.notify_user(
-                    "Tzibbur says this client version is no longer supported. The bridge needs an update before it can reconnect.",
+                    "Tzibbur no longer accepts this client version. The bot needs an update.",
                     None,
                 )
                 .await;
@@ -377,6 +390,38 @@ impl AccountRuntime {
             }
         }
         Ok(())
+    }
+
+    /// Forward every cached message newer than the conversation's bookmark that still
+    /// has its text. Idempotent; safe to run often.
+    pub async fn flush_unforwarded(&self) -> Result<usize> {
+        let mut n = 0;
+        for g in self.local.groups()? {
+            let Some(conv) = self
+                .shared
+                .store
+                .conversation_by_group(self.account_id, &g.id)
+                .await?
+            else {
+                continue;
+            };
+            if conv.closed {
+                continue;
+            }
+            let pending: Vec<MessageEntity> = self
+                .local
+                .thread(&g.id, 500)?
+                .into_iter()
+                .filter(|m| m.seq > conv.last_forwarded_seq && !m.body.is_empty())
+                .collect();
+            if pending.is_empty() {
+                continue;
+            }
+            tracing::info!(account = self.account_id, group = %g.id, count = pending.len(), "forwarding messages left over from an outage");
+            n += pending.len();
+            self.forward_to(&conv, pending).await?;
+        }
+        Ok(n)
     }
 
     /// Create topics for groups that have none yet and fix names. Called after
@@ -463,12 +508,7 @@ impl AccountRuntime {
             self.warn_topics_unavailable().await;
         }
         if !history.is_empty() {
-            self.send_note(
-                &conv,
-                &format!("Importing the last {} message(s)…", history.len()),
-            )
-            .await
-            .ok();
+            self.send_note(&conv, "Recent messages:").await.ok();
             self.forward_to(&conv, history).await?;
         }
         Ok(conv)
@@ -706,7 +746,7 @@ impl AccountRuntime {
             "reconnect",
         )]]);
         self.notify_user(
-            "Your Tzibbur session expired or was revoked. Messages are paused until you reconnect.",
+            "Your Tzibbur session expired. Reconnect to resume.",
             Some(kb),
         )
         .await;
@@ -901,7 +941,7 @@ impl AccountRuntime {
         {
             self.send_note(
                 &conv,
-                "The group is big enough now — resending your earlier message(s).",
+                "The group is big enough now. Sending your earlier message.",
             )
             .await
             .ok();
@@ -996,7 +1036,7 @@ impl AccountRuntime {
                         let reason = match code.as_str() {
                             "group-too-small" => match self.client.get_group(&conv.group_id).await {
                                 Ok(g) => format!(
-                                    "Tzibbur requires {} members before anyone can post (the group has {}). Add members with /add — I'll resend this automatically once it's big enough",
+                                    "Tzibbur needs {} members before anyone can post; the group has {}. Add members with /add and this message will be sent automatically",
                                     g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(3),
                                     g.member_count
                                 ),
@@ -1022,7 +1062,7 @@ impl AccountRuntime {
                             .bot
                             .send_message(
                                 ChatId(self.telegram_chat_id),
-                                format!("Not delivered: {reason}."),
+                                format!("Not sent: {reason}."),
                             )
                             .reply_parameters(teloxide::types::ReplyParameters::new(MessageId(tg)));
                         if let Some(t) = conv.topic_id() {

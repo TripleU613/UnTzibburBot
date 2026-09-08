@@ -50,6 +50,30 @@ services:
       timeout: 5s
       retries: 20
 
+  # Daily pg_dump of the Directus database (mappings + encrypted sessions); 14 days kept.
+  backup:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGUSER: directus
+      PGPASSWORD: ${DB_PASSWORD}
+      PGDATABASE: directus
+    volumes:
+      - backups:/backups
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        while true; do
+          f=/backups/directus-$$(date +%Y%m%d-%H%M).sql.gz
+          pg_dump --no-owner | gzip > "$$f" && echo "backup: $$f"
+          find /backups -name 'directus-*.sql.gz' -mtime +14 -delete
+          sleep 86400
+        done
+
   bridge:
     build: .
     image: tzibbur-telegram-bridge:latest
@@ -79,6 +103,7 @@ services:
       options: { max-size: "20m", max-file: "5" }
 
 volumes:
+  backups:
   db:
   directus_uploads:
   directus_extensions:

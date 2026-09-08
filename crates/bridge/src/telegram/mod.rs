@@ -17,7 +17,7 @@ use teloxide::utils::command::BotCommands;
 #[derive(BotCommands, Clone, Debug)]
 #[command(rename_rule = "lowercase", description = "Commands")]
 pub enum Command {
-    #[command(description = "Welcome and status")]
+    #[command(description = "Start")]
     Start,
     #[command(description = "Connect your Tzibbur account")]
     Connect,
@@ -150,14 +150,12 @@ pub async fn setup_bot_profile(bot: &BridgeBot, app: &App) -> Result<()> {
     let cmds: Vec<BotCommand> = Command::bot_commands();
     bot.set_my_commands(cmds).await?;
     bot.set_my_short_description()
-        .short_description(
-            "A Telegram client for Tzibbur: your groups as topics, read and reply here.",
-        )
+        .short_description("A Telegram client for Tzibbur. Your groups as topics.")
         .await
         .ok();
     bot.set_my_description()
         .description(
-            "A Telegram client for Tzibbur.\n\nEach Tzibbur group you belong to becomes a topic in your chat with this bot. Read there, reply there; new groups appear on their own.\n\nSend /connect to sign in with your phone number. The bot stores only ids and an encrypted session, never message text. Open source.",
+            "A Telegram client for Tzibbur.\n\nEach group you belong to becomes a topic in this chat. Read and reply here.\n\nSend /connect to sign in with your phone number. Open source; message text is never stored.",
         )
         .await
         .ok();
