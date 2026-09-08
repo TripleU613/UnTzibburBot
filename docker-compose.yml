@@ -1,0 +1,78 @@
+# Tzibbur ↔ Telegram bridge: Postgres + Directus + the Rust bridge.
+#   cp .env.example .env   # fill in the secrets
+#   docker compose up -d --build
+services:
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: directus
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      POSTGRES_DB: directus
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U directus"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  directus:
+    image: directus/directus:11
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${DIRECTUS_PORT:-8055}:8055"
+    environment:
+      SECRET: ${DIRECTUS_SECRET:?set DIRECTUS_SECRET in .env}
+      DB_CLIENT: pg
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_DATABASE: directus
+      DB_USER: directus
+      DB_PASSWORD: ${DB_PASSWORD}
+      ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD:?set DIRECTUS_ADMIN_PASSWORD in .env}
+      # Static token the bridge uses (created for the initial admin on first boot).
+      ADMIN_TOKEN: ${DIRECTUS_TOKEN:?set DIRECTUS_TOKEN in .env}
+      PUBLIC_URL: ${DIRECTUS_PUBLIC_URL:-http://localhost:8055}
+      WEBSOCKETS_ENABLED: "false"
+      TELEMETRY: "false"
+    volumes:
+      - directus_uploads:/directus/uploads
+      - directus_extensions:/directus/extensions
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8055/server/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  bridge:
+    build: .
+    image: tzibbur-telegram-bridge:latest
+    restart: unless-stopped
+    depends_on:
+      directus:
+        condition: service_healthy
+    ports:
+      - "${BRIDGE_PORT:-8080}:8080"
+    environment:
+      TELOXIDE_TOKEN: ${TELOXIDE_TOKEN:?set TELOXIDE_TOKEN in .env}
+      DIRECTUS_URL: http://directus:8055
+      DIRECTUS_TOKEN: ${DIRECTUS_TOKEN}
+      BRIDGE_MASTER_KEY: ${BRIDGE_MASTER_KEY:?set BRIDGE_MASTER_KEY in .env (openssl rand -base64 32)}
+      # Optional: public HTTPS URL of this service → webhook mode + Mini App login button.
+      BRIDGE_PUBLIC_URL: ${BRIDGE_PUBLIC_URL:-}
+      BRIDGE_HISTORY_IMPORT: ${BRIDGE_HISTORY_IMPORT:-20}
+      TZIBBUR_BASE_URL: ${TZIBBUR_BASE_URL:-https://api.tzibbur.me}
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - bridge_data:/data
+
+volumes:
+  db:
+  directus_uploads:
+  directus_extensions:
+  bridge_data:

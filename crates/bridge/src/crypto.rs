@@ -14,17 +14,27 @@ pub struct SessionCipher {
 
 impl SessionCipher {
     pub fn new(master_key: [u8; 32]) -> Self {
-        Self { inner: Arc::new(AesGcmCipher::new(master_key)) }
+        Self {
+            inner: Arc::new(AesGcmCipher::new(master_key)),
+        }
     }
 
     pub fn encrypt(&self, token: &str) -> Result<String> {
-        let wire = self.inner.encrypt(token.as_bytes()).context("encrypt session")?;
+        let wire = self
+            .inner
+            .encrypt(token.as_bytes())
+            .context("encrypt session")?;
         Ok(base64::engine::general_purpose::STANDARD.encode(wire))
     }
 
     pub fn decrypt(&self, blob: &str) -> Result<String> {
-        let wire = base64::engine::general_purpose::STANDARD.decode(blob.as_bytes()).context("session base64")?;
-        let plain = self.inner.decrypt(&wire).context("decrypt session (wrong BRIDGE_MASTER_KEY?)")?;
+        let wire = base64::engine::general_purpose::STANDARD
+            .decode(blob.as_bytes())
+            .context("session base64")?;
+        let plain = self
+            .inner
+            .decrypt(&wire)
+            .context("decrypt session (wrong BRIDGE_MASTER_KEY?)")?;
         String::from_utf8(plain).context("session utf8")
     }
 }

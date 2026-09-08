@@ -1,0 +1,8 @@
+target
+data
+.tzibbur
+*.env
+*.db
+*.db-wal
+*.db-shm
+.git

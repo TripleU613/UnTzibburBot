@@ -30,7 +30,10 @@ pub struct Config {
 }
 
 fn env(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
 }
 
 impl Config {
@@ -50,12 +53,18 @@ impl Config {
             .decode(key_b64.as_bytes())
             .context("BRIDGE_MASTER_KEY is not valid base64")?;
         if key.len() != 32 {
-            bail!("BRIDGE_MASTER_KEY must decode to exactly 32 bytes, got {}", key.len());
+            bail!(
+                "BRIDGE_MASTER_KEY must decode to exactly 32 bytes, got {}",
+                key.len()
+            );
         }
         let mut master_key = [0u8; 32];
         master_key.copy_from_slice(&key);
         let public_url = match env("BRIDGE_PUBLIC_URL") {
-            Some(u) => Some(u.parse::<url::Url>().context("BRIDGE_PUBLIC_URL is not a valid URL")?),
+            Some(u) => Some(
+                u.parse::<url::Url>()
+                    .context("BRIDGE_PUBLIC_URL is not a valid URL")?,
+            ),
             None => None,
         };
         Ok(Config {
@@ -63,11 +72,19 @@ impl Config {
             directus_url,
             directus_token,
             master_key,
-            tzibbur_base_url: env("TZIBBUR_BASE_URL").unwrap_or_else(|| tzibbur_api::constants::DEFAULT_BASE_URL.into()),
-            data_dir: env("BRIDGE_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("./data")),
+            tzibbur_base_url: env("TZIBBUR_BASE_URL")
+                .unwrap_or_else(|| tzibbur_api::constants::DEFAULT_BASE_URL.into()),
+            data_dir: env("BRIDGE_DATA_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("./data")),
             public_url,
-            listen: env("BRIDGE_LISTEN").unwrap_or_else(|| "0.0.0.0:8080".into()).parse().context("BRIDGE_LISTEN")?,
-            history_import: env("BRIDGE_HISTORY_IMPORT").and_then(|v| v.parse().ok()).unwrap_or(20),
+            listen: env("BRIDGE_LISTEN")
+                .unwrap_or_else(|| "0.0.0.0:8080".into())
+                .parse()
+                .context("BRIDGE_LISTEN")?,
+            history_import: env("BRIDGE_HISTORY_IMPORT")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20),
             collection_prefix: env("BRIDGE_COLLECTION_PREFIX").unwrap_or_else(|| "bridge_".into()),
         })
     }
