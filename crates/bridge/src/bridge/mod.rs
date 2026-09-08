@@ -266,6 +266,9 @@ impl AccountRuntime {
                 ) {
                     if conv.name.as_deref() != Some(g.name.as_str()) {
                         self.rename_topic(&conv, &g.name).await?;
+                        self.send_note(&conv, &format!("✏️ Group renamed to “{}”", g.name))
+                            .await
+                            .ok();
                     }
                 }
             }
@@ -308,6 +311,71 @@ impl AccountRuntime {
                 tracing::debug!(account = self.account_id, ?s, "sync state")
             }
             SyncEvent::MembersChanged { .. } => {}
+            SyncEvent::MemberAdded { group_id, member } => {
+                if let Some(conv) = self
+                    .shared
+                    .store
+                    .conversation_by_group(self.account_id, &group_id)
+                    .await?
+                {
+                    let who = if member.user_id == self.tzibbur_user_id {
+                        "You".to_owned()
+                    } else {
+                        member.display_name.clone()
+                    };
+                    self.send_note(&conv, &format!("➕ {who} joined"))
+                        .await
+                        .ok();
+                }
+            }
+            SyncEvent::MemberRemoved {
+                group_id,
+                user_id,
+                display_name,
+            } => {
+                if user_id == self.tzibbur_user_id {
+                    return Ok(()); // handled by GroupDeleted
+                }
+                if let Some(conv) = self
+                    .shared
+                    .store
+                    .conversation_by_group(self.account_id, &group_id)
+                    .await?
+                {
+                    let who = display_name.unwrap_or_else(|| "A member".into());
+                    self.send_note(&conv, &format!("➖ {who} left")).await.ok();
+                }
+            }
+            SyncEvent::RoleChanged {
+                group_id,
+                user_id,
+                role,
+                display_name,
+            } => {
+                if let Some(conv) = self
+                    .shared
+                    .store
+                    .conversation_by_group(self.account_id, &group_id)
+                    .await?
+                {
+                    let who = if user_id == self.tzibbur_user_id {
+                        "You".to_owned()
+                    } else {
+                        display_name.unwrap_or_else(|| "A member".into())
+                    };
+                    let what = match role {
+                        Role::Admin => format!(
+                            "⭐ {who} {} now an admin",
+                            if who == "You" { "are" } else { "is" }
+                        ),
+                        Role::Member => format!(
+                            "{who} {} no longer an admin",
+                            if who == "You" { "are" } else { "is" }
+                        ),
+                    };
+                    self.send_note(&conv, &what).await.ok();
+                }
+            }
         }
         Ok(())
     }
@@ -671,6 +739,117 @@ impl AccountRuntime {
             .await
     }
 
+    /// Live group details (falls back to the local cache).
+    pub async fn group_details(
+        &self,
+        conv: &Conversation,
+    ) -> Result<(GroupEntity, Option<tzibbur_api::models::GroupDto>)> {
+        let live = self.client.get_group(&conv.group_id).await.ok();
+        if let Some(g) = &live {
+            self.local.upsert_group(&GroupEntity::from(g.clone()))?;
+        }
+        let local = self
+            .local
+            .get_group(&conv.group_id)?
+            .ok_or_else(|| anyhow!("group not cached"))?;
+        Ok((local, live))
+    }
+
+    pub async fn rename_group(&self, conv: &Conversation, name: &str) -> Result<()> {
+        self.client
+            .update_group(
+                &conv.group_id,
+                &tzibbur_api::models::UpdateGroupRequest::rename(name),
+            )
+            .await
+            .map_err(anyhow::Error::new)?;
+        self.local
+            .apply_group_updated(&conv.group_id, Some(name), None, None)?;
+        self.rename_topic(conv, name).await
+    }
+
+    pub async fn set_permission(
+        &self,
+        conv: &Conversation,
+        who_can_post: Option<Permission>,
+        who_can_add: Option<Permission>,
+    ) -> Result<()> {
+        let req = tzibbur_api::models::UpdateGroupRequest {
+            name: None,
+            settings: Some(tzibbur_api::models::GroupSettings {
+                who_can_post: who_can_post.clone(),
+                who_can_add_members: who_can_add.clone(),
+            }),
+        };
+        self.client
+            .update_group(&conv.group_id, &req)
+            .await
+            .map_err(anyhow::Error::new)?;
+        self.local.apply_group_updated(
+            &conv.group_id,
+            None,
+            who_can_post.as_ref(),
+            who_can_add.as_ref(),
+        )?;
+        Ok(())
+    }
+
+    pub async fn set_member_role(
+        &self,
+        conv: &Conversation,
+        user_id: &str,
+        role: Role,
+    ) -> Result<()> {
+        self.client
+            .set_member_role(&conv.group_id, user_id, role)
+            .await
+            .map_err(anyhow::Error::new)?;
+        self.local.set_role(&conv.group_id, user_id, role)?;
+        Ok(())
+    }
+
+    pub async fn remove_member(&self, conv: &Conversation, user_id: &str) -> Result<()> {
+        self.client
+            .remove_member(&conv.group_id, user_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        self.local.delete_member(&conv.group_id, user_id)?;
+        self.local.set_group_member_count(&conv.group_id, -1)?;
+        Ok(())
+    }
+
+    /// `DELETE /v1/groups/{id}` (admin only) and close the topic.
+    pub async fn delete_group(&self, conv: &Conversation) -> Result<()> {
+        self.sync
+            .delete_group(&conv.group_id)
+            .await
+            .map_err(anyhow::Error::new)?;
+        self.send_note(conv, "🗑 Group deleted.").await.ok();
+        if let Some(t) = conv.topic_id() {
+            let _ = self
+                .shared
+                .bot
+                .close_forum_topic(ChatId(self.telegram_chat_id), ThreadId(MessageId(t)))
+                .await;
+        }
+        self.shared
+            .store
+            .set_conversation_closed(conv.id, true)
+            .await
+    }
+
+    /// Mark everything in the group read on Tzibbur.
+    pub async fn mark_read(&self, conv: &Conversation) -> Result<i64> {
+        let seq = self.local.max_seq(&conv.group_id)?.unwrap_or(0);
+        if seq > 0 {
+            self.sync
+                .mark_read(&conv.group_id, seq)
+                .await
+                .map_err(anyhow::Error::new)?;
+        }
+        Ok(seq)
+    }
+
     // -----------------------------------------------------------------------
     // Outbound (Telegram → Tzibbur)
     // -----------------------------------------------------------------------
@@ -757,7 +936,14 @@ impl AccountRuntime {
                             .and_then(|s| s.parse::<i32>().ok()),
                     ) {
                         let reason = match code.as_str() {
-                            "forbidden" => "you are not allowed to post in this group".to_owned(),
+                            "forbidden" => match self.client.get_group(&conv.group_id).await {
+                                Ok(g) if (g.member_count as usize) < g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(0) as usize => format!(
+                                    "this group needs at least {} members before anyone can post (it has {}). Add members with /add",
+                                    g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(0),
+                                    g.member_count
+                                ),
+                                _ => "you are not allowed to post in this group".to_owned(),
+                            },
                             "not-found" => "the group no longer exists".to_owned(),
                             "invalid-message" => format!(
                                 "the message was rejected (max {MAX_OUTBOUND_CHARS} characters)"

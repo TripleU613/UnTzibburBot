@@ -289,6 +289,97 @@ pub async fn on_command(
                 Err(e) => say(&bot, &msg, &app, format!("Could not add members: {}", escape_html(&friendly(&ae(e))))).await?,
             }
         }
+        Command::Group => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            let (text, kb) = super::groups::card(&rt, &conv).await?;
+            say_kb(&bot, &msg, &app, text, kb).await?;
+        }
+        Command::Rename(arg) => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            match validate_group_name(&arg) {
+                TextValidation::Valid { text } => match rt.rename_group(&conv, &text).await {
+                    Ok(()) => say(&bot, &msg, &app, format!("✏️ Renamed to <b>{}</b>.", escape_html(&text))).await?,
+                    Err(e) => say(&bot, &msg, &app, format!("Could not rename: {}", escape_html(&e.to_string()))).await?,
+                },
+                TextValidation::Empty => {
+                    dialogue.update(State::AwaitRename { conv_id: conv.id }).await?;
+                    say(&bot, &msg, &app, "Send the new group name (max 100 characters), or /cancel.").await?;
+                }
+                TextValidation::TooLong { count, max } => say(&bot, &msg, &app, format!("Too long ({count} characters, max {max}).")).await?,
+            }
+        }
+        Command::Manage => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            let (text, kb) = super::groups::members_view(&rt, &conv).await?;
+            say_kb(&bot, &msg, &app, text, kb).await?;
+        }
+        Command::DeleteGroup => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            let (g, _) = rt.group_details(&conv).await?;
+            if g.my_role != tzibbur_api::models::Role::Admin {
+                say(&bot, &msg, &app, "Only admins can delete a group.").await?;
+            } else {
+                say_kb(
+                    &bot,
+                    &msg,
+                    &app,
+                    format!("Delete <b>{}</b> for all members? This cannot be undone.", escape_html(&g.name)),
+                    kb(vec![vec![("🗑 Delete for everyone", format!("g:{}:del2", conv.id)), ("Cancel", "noop".into())]]),
+                )
+                .await?;
+            }
+        }
+        Command::Read => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            let seq = rt.mark_read(&conv).await?;
+            say(&bot, &msg, &app, if seq > 0 { "✅ Marked read on Tzibbur." } else { "Nothing to mark." }).await?;
+        }
+        Command::Contacts(arg) => {
+            let rt = connected_runtime(&app, &tg).await?;
+            let (phones, bad) = parse_phones(&app, &arg);
+            if phones.is_empty() {
+                say(&bot, &msg, &app, "Usage: <code>/contacts 212-736-5000, +972 50 123 4567</code> — tells you who is on Tzibbur.").await?;
+                return Ok(());
+            }
+            match rt.client().check_contacts_batched(&phones, None).await {
+                Ok(reg) => {
+                    let on: Vec<String> = reg.iter().filter_map(|c| c.phone_e164.clone()).collect();
+                    let off: Vec<String> = phones.iter().filter(|p| !on.contains(p)).cloned().collect();
+                    let mut out = String::new();
+                    if !on.is_empty() {
+                        out.push_str(&format!("✅ On Tzibbur: {}\n", escape_html(&on.join(", "))));
+                    }
+                    if !off.is_empty() {
+                        out.push_str(&format!("❌ Not on Tzibbur: {}\n", escape_html(&off.join(", "))));
+                    }
+                    if !bad.is_empty() {
+                        out.push_str(&format!("Skipped (not valid numbers): {}", escape_html(&bad.join(", "))));
+                    }
+                    say(&bot, &msg, &app, out).await?;
+                }
+                Err(e) => say(&bot, &msg, &app, format!("Lookup failed: {}", escape_html(&friendly(&ae(e))))).await?,
+            }
+        }
+        Command::Devices => {
+            let rt = connected_runtime(&app, &tg).await?;
+            match rt.client().devices().await {
+                Ok(devs) => {
+                    let mut out = format!("<b>Your Tzibbur devices</b> ({})\n", devs.len());
+                    for d in devs {
+                        let seen = d.last_seen_at.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "never".into());
+                        out.push_str(&format!(
+                            "• {} {} — last seen {}\n",
+                            escape_html(d.platform.as_deref().unwrap_or("?")),
+                            escape_html(d.device_model.as_deref().unwrap_or("")),
+                            seen
+                        ));
+                    }
+                    out.push_str("\nThe bridge itself shows up as one of these (android · Pixel 7 by default).");
+                    say(&bot, &msg, &app, out).await?;
+                }
+                Err(e) => say(&bot, &msg, &app, format!("Could not list devices: {}", escape_html(&friendly(&ae(e))))).await?,
+            }
+        }
         Command::Members => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
             rt.sync_refresh_members(&conv.group_id).await.ok();
@@ -407,7 +498,7 @@ fn parse_phones(app: &App, arg: &str) -> (Vec<String>, Vec<String>) {
     parse_phone_list(arg, &app.shared.cfg.default_region)
 }
 
-fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> String {
+pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> String {
     use tzibbur_api::models::AddedMember;
     let added: Vec<String> = out
         .added
@@ -963,16 +1054,116 @@ pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<(
     if text.is_empty() {
         return Ok(());
     }
-    if text.chars().count() > MAX_OUTBOUND_CHARS {
-        return say(
+    // Replying to a forwarded message: quote it, since Tzibbur has no reply threading.
+    let text = match msg.reply_to_message() {
+        Some(r) if r.text().is_some() => quote_prefix(r, &rt.tzibbur_user_id) + &text,
+        _ => text,
+    };
+    // Tzibbur caps a message at MAX_OUTBOUND_CHARS: split long texts on whitespace.
+    let parts = split_for_tzibbur(&text, MAX_OUTBOUND_CHARS);
+    if parts.len() > 1 {
+        say(
             &bot,
             &msg,
             &app,
-            format!("Too long: Tzibbur allows {MAX_OUTBOUND_CHARS} characters per message."),
+            format!("ℹ️ Long message — sending it as {} parts.", parts.len()),
         )
-        .await;
+        .await?;
     }
-    if let Err(e) = rt.send_text(&conv, &text, msg.id.0).await {
+    for part in parts {
+        if let Err(e) = rt.send_text(&conv, &part, msg.id.0).await {
+            let e = anyhow::anyhow!(e);
+            return send_failed(&bot, &msg, &conv, &e).await;
+        }
+    }
+    Ok(())
+}
+
+async fn send_failed(
+    bot: &BridgeBot,
+    msg: &Message,
+    conv: &Conversation,
+    e: &anyhow::Error,
+) -> Result<()> {
+    let mut r = bot
+        .send_message(
+            msg.chat.id,
+            format!("❌ Not sent: {}.", escape_html(&e.to_string())),
+        )
+        .parse_mode(HTML)
+        .reply_parameters(ReplyParameters::new(msg.id));
+    if let Some(t) = conv.topic_id() {
+        r = r.message_thread_id(ThreadId(MessageId(t)));
+    }
+    r.await?;
+    Ok(())
+}
+
+/// `↩ Name: “snippet…”` built from the Telegram message being replied to.
+fn quote_prefix(reply: &Message, _self_id: &str) -> String {
+    let raw = reply.text().unwrap_or_default();
+    let from_bot = reply.from.as_ref().map(|u| u.is_bot).unwrap_or(false);
+    let (label, body) = if from_bot {
+        match raw.split_once('\n') {
+            Some((l, b)) => (l.trim().to_owned(), b.trim()),
+            None => ("".to_owned(), raw.trim()),
+        }
+    } else {
+        ("You".to_owned(), raw.trim())
+    };
+    if body.is_empty() || body.starts_with("🕘") || body.starts_with("🚫") {
+        return String::new();
+    }
+    let snippet: String = body.chars().take(80).collect();
+    let ell = if body.chars().count() > 80 { "…" } else { "" };
+    if label.is_empty() {
+        format!("↩ “{snippet}{ell}”\n")
+    } else {
+        format!("↩ {label}: “{snippet}{ell}”\n")
+    }
+}
+
+/// Split on whitespace into chunks of at most `max` characters.
+pub fn split_for_tzibbur(text: &str, max: usize) -> Vec<String> {
+    if text.chars().count() <= max {
+        return vec![text.to_owned()];
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_inclusive(char::is_whitespace) {
+        if cur.chars().count() + word.chars().count() > max && !cur.is_empty() {
+            out.push(cur.trim_end().to_owned());
+            cur = String::new();
+        }
+        if word.chars().count() > max {
+            // A single huge token: hard-split.
+            let mut w = String::new();
+            for c in word.chars() {
+                if w.chars().count() >= max {
+                    out.push(std::mem::take(&mut w));
+                }
+                w.push(c);
+            }
+            cur.push_str(&w);
+        } else {
+            cur.push_str(word);
+        }
+    }
+    if !cur.trim().is_empty() {
+        out.push(cur.trim_end().to_owned());
+    }
+    out
+}
+
+#[allow(dead_code)]
+async fn _unused_send_path(
+    bot: &BridgeBot,
+    msg: &Message,
+    conv: &Conversation,
+    rt: &crate::bridge::AccountRuntime,
+    text: String,
+) -> Result<()> {
+    if let Err(e) = rt.send_text(conv, &text, msg.id.0).await {
         let mut r = bot
             .send_message(
                 msg.chat.id,
@@ -1036,6 +1227,14 @@ pub async fn on_callback(
                     },
                 )
                 .await?;
+            }
+        }
+        d if d.starts_with("g:") || d.starts_with("m:") || d.starts_with("ma:") => {
+            match super::groups::on_callback(&bot, &app, &q, &dialogue, d).await {
+                Ok(t) => ack = t,
+                Err(e) => {
+                    ack = format!("⚠️ {}", e.to_string().chars().take(180).collect::<String>());
+                }
             }
         }
         d if d.starts_with("cat:") => {
@@ -1127,4 +1326,36 @@ pub async fn on_successful_payment(bot: BridgeBot, msg: Message, app: Arc<App>) 
         say(&bot, &msg, &app, "⭐ Thank you for supporting the bridge!").await?;
     }
     Ok(())
+}
+
+/// Tzibbur messages cannot be edited: tell the user once per edit inside a group topic.
+pub async fn on_edited(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()> {
+    if !msg.chat.is_private() {
+        return Ok(());
+    }
+    if resolve_conversation(&app, &msg).await?.is_some() {
+        let mut r = bot
+            .send_message(msg.chat.id, "ℹ️ Tzibbur messages can't be edited after sending. Send the correction as a new message.")
+            .reply_parameters(ReplyParameters::new(msg.id));
+        if let Some(t) = msg.thread_id {
+            r = r.message_thread_id(t);
+        }
+        r.await?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_for_tzibbur;
+    #[test]
+    fn splits_on_whitespace() {
+        let words: Vec<String> = (0..300).map(|i| format!("word{i}")).collect();
+        let text = words.join(" ");
+        let parts = split_for_tzibbur(&text, 1000);
+        assert!(parts.len() >= 2);
+        assert!(parts.iter().all(|p| p.chars().count() <= 1000));
+        assert_eq!(parts.join(" ").split_whitespace().count(), 300);
+        assert_eq!(split_for_tzibbur("short", 1000), vec!["short"]);
+    }
 }

@@ -12,7 +12,7 @@
 
 use crate::error::{AppError, Result};
 use crate::http::TzibburClient;
-use crate::models::{GroupDto, MessagesQuery, PendingResponse};
+use crate::models::{GroupDto, MessagesQuery, PendingResponse, Role};
 use crate::outbox::OutboxDispatcher;
 use crate::store::{
     GroupEntity, LocalStore, MemberEntity, MessageEntity, OutboxEntity, StoreBatchOutcome,
@@ -77,6 +77,23 @@ pub enum SyncEvent {
     },
     MembersChanged {
         group_id: String,
+    },
+    /// A member joined (from a `member-added` event).
+    MemberAdded {
+        group_id: String,
+        member: MemberEntity,
+    },
+    /// A member left or was removed; `display_name` is the cached name if known.
+    MemberRemoved {
+        group_id: String,
+        user_id: String,
+        display_name: Option<String>,
+    },
+    RoleChanged {
+        group_id: String,
+        user_id: String,
+        role: Role,
+        display_name: Option<String>,
     },
     /// A full catch-up / group reconciliation completed.
     CaughtUp,
@@ -376,9 +393,13 @@ impl SyncEngine {
                     MemberRefreshPolicy::All => true,
                     MemberRefreshPolicy::ObservedOnly => self.observed.is_observed(&group_id),
                 };
-                self.store
-                    .upsert_member(&MemberEntity::from_dto(member, &group_id))?;
+                let entity = MemberEntity::from_dto(member, &group_id);
+                self.store.upsert_member(&entity)?;
                 self.store.set_group_member_count(&group_id, 1)?;
+                self.emit(SyncEvent::MemberAdded {
+                    group_id: group_id.clone(),
+                    member: entity,
+                });
                 if refresh {
                     if let Err(e) = self.refresh_members(&group_id).await {
                         tracing::warn!(error = %e, group_id, "sync: member refresh failed");
@@ -387,6 +408,16 @@ impl SyncEngine {
                 self.emit(SyncEvent::MembersChanged { group_id });
             }
             GroupEvent::MemberRemoved { group_id, user_id } => {
+                let display_name = self.store.members(&group_id).ok().and_then(|ms| {
+                    ms.into_iter()
+                        .find(|m| m.user_id == user_id)
+                        .map(|m| m.display_name)
+                });
+                self.emit(SyncEvent::MemberRemoved {
+                    group_id: group_id.clone(),
+                    user_id: user_id.clone(),
+                    display_name,
+                });
                 self.store.delete_member(&group_id, &user_id)?;
                 self.store.set_group_member_count(&group_id, -1)?;
                 if self.self_user_id().as_deref() == Some(user_id.as_str()) {
@@ -403,6 +434,17 @@ impl SyncEngine {
                 role,
             } => {
                 self.store.set_role(&group_id, &user_id, role)?;
+                let display_name = self.store.members(&group_id).ok().and_then(|ms| {
+                    ms.into_iter()
+                        .find(|m| m.user_id == user_id)
+                        .map(|m| m.display_name)
+                });
+                self.emit(SyncEvent::RoleChanged {
+                    group_id: group_id.clone(),
+                    user_id: user_id.clone(),
+                    role,
+                    display_name,
+                });
                 if self.self_user_id().as_deref() == Some(user_id.as_str()) {
                     self.store.set_my_role(&group_id, role)?;
                     self.emit(SyncEvent::GroupChanged {

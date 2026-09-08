@@ -1,6 +1,7 @@
 //! Telegram side: commands, the OTP login dialogue, topic-message routing,
 //! inline-keyboard callbacks, Telegram Stars donations, bot profile setup.
 
+pub mod groups;
 pub mod handlers;
 
 use crate::app::App;
@@ -26,8 +27,22 @@ pub enum Command {
     Chats,
     #[command(description = "create a new Tzibbur group")]
     NewGroup,
+    #[command(description = "group card: info, members, permissions, rename, leave, delete")]
+    Group,
     #[command(description = "add members to the group of the current topic (phone numbers)")]
     Add(String),
+    #[command(description = "rename the group of the current topic")]
+    Rename(String),
+    #[command(description = "remove a member / change roles (pick from a list)")]
+    Manage,
+    #[command(description = "delete the group of the current topic (admins, two-step)")]
+    DeleteGroup,
+    #[command(description = "mark the current group read on Tzibbur")]
+    Read,
+    #[command(description = "check which phone numbers are on Tzibbur")]
+    Contacts(String),
+    #[command(description = "list your Tzibbur devices")]
+    Devices,
     #[command(description = "show members of the group of the current topic")]
     Members,
     #[command(description = "leave the group of the current topic")]
@@ -78,6 +93,10 @@ pub enum State {
     AwaitGroupCategory { name: String },
     /// /newgroup: waiting for member phone numbers.
     AwaitGroupPhones { name: String, category: String },
+    /// Group card → Rename: waiting for the new name.
+    AwaitRename { conv_id: i64 },
+    /// Group card → Add members: waiting for phone numbers.
+    AwaitAddPhones { conv_id: i64 },
 }
 
 pub type Storage = InMemStorage<State>;
@@ -113,7 +132,10 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
         .branch(
             case![State::AwaitGroupPhones { name, category }].endpoint(handlers::on_group_phones),
         )
+        .branch(case![State::AwaitRename { conv_id }].endpoint(groups::on_rename))
+        .branch(case![State::AwaitAddPhones { conv_id }].endpoint(groups::on_add_phones))
         .branch(dptree::endpoint(handlers::on_message));
+    let edited = Update::filter_edited_message().endpoint(handlers::on_edited);
     let callbacks = Update::filter_callback_query().endpoint(handlers::on_callback);
     let pre_checkout = Update::filter_pre_checkout_query().endpoint(handlers::on_pre_checkout);
     dptree::entry()

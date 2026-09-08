@@ -772,7 +772,8 @@ impl From<GroupDtoWire> for GroupDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateGroupRequest {
-    /// Max 100 code points.
+    /// Max 100 code points. (The live server reads only `name` and `category`;
+    /// permissions default to `everyone` and can be changed with `PATCH`.)
     pub name: String,
     /// Must be a slug from `GET /v1/groups/categories` (`family`, `neighborhood`, `shul`, `school`, `other`).
     pub category: String,
@@ -794,15 +795,42 @@ impl CreateGroupRequest {
     }
 }
 
+/// Body of `PATCH /v1/groups/{id}`. Live server: `{ name?, settings?: { whoCanPost?, whoCanAddMembers? } }`
+/// with the permission enum `everyone | admins`; at least one of name/settings is required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateGroupRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub who_can_post: Option<Permission>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub who_can_add_members: Option<Permission>,
+    pub settings: Option<GroupSettings>,
+}
+
+impl UpdateGroupRequest {
+    pub fn rename(name: impl Into<String>) -> Self {
+        Self {
+            name: Some(name.into()),
+            settings: None,
+        }
+    }
+    pub fn who_can_post(p: Permission) -> Self {
+        Self {
+            name: None,
+            settings: Some(GroupSettings {
+                who_can_post: Some(p),
+                who_can_add_members: None,
+            }),
+        }
+    }
+    pub fn who_can_add_members(p: Permission) -> Self {
+        Self {
+            name: None,
+            settings: Some(GroupSettings {
+                who_can_post: None,
+                who_can_add_members: Some(p),
+            }),
+        }
+    }
 }
 
 /// Cached in `AppPrefsStore` under `CATEGORIES_JSON`.
