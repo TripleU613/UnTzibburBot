@@ -140,6 +140,27 @@ impl SqliteStore {
             )));
         }
         conn.pragma_update(None, "user_version", DB_SCHEMA_VERSION)?;
+        Self::repair(conn)?;
+        Ok(())
+    }
+
+    /// Fix inconsistent outbox rows left by older versions or crashes.
+    fn repair(conn: &Connection) -> Result<()> {
+        // Delivered (server id/seq known) but state was clobbered by a later rejection.
+        let fixed = conn.execute(
+            "UPDATE outbox SET state = 'CONFIRMED', errorCode = NULL, nextAttemptAt = NULL
+             WHERE confirmedSeq IS NOT NULL AND state != 'CONFIRMED'",
+            [],
+        )?;
+        // "Failed" only because we could not read the reply: verify them, don't leave them dead.
+        let sched = conn.execute(
+            "UPDATE outbox SET nextAttemptAt = ?1
+             WHERE state = 'PENDING' AND nextAttemptAt IS NULL AND errorCode IN ('json', 'client-message-id-reused')",
+            params![now_epoch_ms()],
+        )?;
+        if fixed + sched > 0 {
+            tracing::info!(fixed, scheduled = sched, "outbox repaired");
+        }
         Ok(())
     }
 
@@ -917,7 +938,7 @@ impl LocalStore for SqliteStore {
 
     fn mark_in_flight(&self, client_message_id: &str, at: i64) -> Result<()> {
         self.conn.lock().execute(
-            "UPDATE outbox SET state = 'IN_FLIGHT', lastAttemptAt = ?2 WHERE clientMessageId = ?1",
+            "UPDATE outbox SET state = 'IN_FLIGHT', lastAttemptAt = ?2 WHERE clientMessageId = ?1 AND state != 'CONFIRMED'",
             params![client_message_id, at],
         )?;
         Ok(())
@@ -927,7 +948,7 @@ impl LocalStore for SqliteStore {
         let gid = self.outbox_group(client_message_id)?;
         self.conn.lock().execute(
             "UPDATE outbox SET state = 'PENDING', errorCode = ?2, nextAttemptAt = NULL, attemptCount = attemptCount + 1
-             WHERE clientMessageId = ?1",
+             WHERE clientMessageId = ?1 AND state != 'CONFIRMED'",
             params![client_message_id, error_code],
         )?;
         if let Some(g) = gid {
@@ -945,7 +966,7 @@ impl LocalStore for SqliteStore {
         let gid = self.outbox_group(client_message_id)?;
         self.conn.lock().execute(
             "UPDATE outbox SET state = 'PENDING', nextAttemptAt = ?2, errorCode = ?3, attemptCount = attemptCount + 1
-             WHERE clientMessageId = ?1",
+             WHERE clientMessageId = ?1 AND state != 'CONFIRMED'",
             params![client_message_id, next_at, error_code],
         )?;
         if let Some(g) = gid {
@@ -1183,6 +1204,22 @@ mod tests {
         assert_eq!(row.confirmed_seq, Some(10));
         assert_eq!(row.outgoing_state(), OutgoingState::Sent);
         assert_eq!(s.pending_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn confirm_wins_over_late_rejection() {
+        let s = SqliteStore::in_memory().unwrap();
+        s.upsert_group(&group("g")).unwrap();
+        let e = OutboxEntity::new("g", "x");
+        s.insert_outbox(&e).unwrap();
+        s.mark_in_flight(&e.client_message_id, 1).unwrap();
+        s.confirm_sent(&e.client_message_id, "srv", 7).unwrap();
+        s.mark_rejected(&e.client_message_id, "json").unwrap();
+        s.reschedule(&e.client_message_id, 5, Some("x")).unwrap();
+        let r = s.get_outbox(&e.client_message_id).unwrap().unwrap();
+        assert_eq!(r.state, OutboxState::Confirmed);
+        assert_eq!(r.confirmed_seq, Some(7));
+        assert!(r.error_code.is_none());
     }
 
     #[test]

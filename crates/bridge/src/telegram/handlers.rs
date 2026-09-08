@@ -646,7 +646,10 @@ async fn connected_runtime(app: &App, tg: &TgUser) -> Result<Arc<crate::bridge::
         Some(a) if a.status == AccountStatus::ReauthRequired => {
             Err(anyhow!("Your session expired. Use /reconnect."))
         }
-        _ => Err(anyhow!("Connect first with /connect.")),
+        other => {
+            tracing::warn!(telegram_user = tg.id.0, account = ?other.as_ref().map(|a| (a.id, a.status)), "connected_runtime: not connected");
+            Err(anyhow!("Connect first with /connect."))
+        }
     }
 }
 
