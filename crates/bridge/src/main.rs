@@ -11,6 +11,7 @@ mod config;
 mod crypto;
 mod directus;
 mod miniapp;
+mod phone;
 mod store;
 mod telegram;
 

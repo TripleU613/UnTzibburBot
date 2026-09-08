@@ -6,6 +6,7 @@
 //! HMAC-SHA256 against the bot token before anything happens.
 
 use crate::app::App;
+use crate::phone::parse_phone;
 use crate::telegram::handlers::finish_connect;
 use anyhow::{anyhow, Result};
 use axum::extract::State;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use teloxide::types::{ChatId, User as TgUser};
 use tzibbur_api::models::{StartAuthRequest, VerifyAuthRequest};
 use tzibbur_api::prelude::*;
-use tzibbur_api::validation::{is_valid_otp, looks_like_e164, normalize_phone};
+use tzibbur_api::validation::is_valid_otp;
 
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
@@ -122,13 +123,8 @@ async fn api_start(
 ) -> Result<Json<StartResp>, (StatusCode, Json<ErrResp>)> {
     let _user = verify_init_data(&req.init_data, &app.shared.cfg.telegram_token, 3600)
         .map_err(|e| err(StatusCode::UNAUTHORIZED, e))?;
-    let phone = normalize_phone(&req.phone);
-    if !looks_like_e164(&phone) {
-        return Err(err(
-            StatusCode::BAD_REQUEST,
-            "phone must be in international format",
-        ));
-    }
+    let phone = parse_phone(&req.phone, &app.shared.cfg.default_region)
+        .map_err(|why| err(StatusCode::BAD_REQUEST, format!("phone: {why}")))?;
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
         .build()
@@ -174,7 +170,7 @@ async fn api_verify(
         .verify_auth(&VerifyAuthRequest {
             challenge_id: req.challenge_id,
             code,
-            phone: normalize_phone(&req.phone),
+            phone: parse_phone(&req.phone, &app.shared.cfg.default_region).unwrap_or(req.phone),
             display_name,
             region: None,
         })

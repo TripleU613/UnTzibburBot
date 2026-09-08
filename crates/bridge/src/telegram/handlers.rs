@@ -2,14 +2,16 @@ use super::{Command, Dialog, State, Storage};
 use crate::app::App;
 use crate::bridge::format::escape_html;
 use crate::bridge::{BridgeBot, MAX_OUTBOUND_CHARS};
+use crate::phone::{parse_phone, parse_phone_list};
 use crate::store::{AccountSettings, AccountStatus, Conversation};
 use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::GetChatId;
 use teloxide::prelude::*;
 use teloxide::types::{
-    CallbackQuery, ChatId, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, MessageId,
-    ParseMode, PreCheckoutQuery, ReplyParameters, ThreadId, User as TgUser,
+    ButtonRequest, CallbackQuery, ChatId, InlineKeyboardButton, InlineKeyboardMarkup,
+    KeyboardButton, KeyboardMarkup, KeyboardRemove, LabeledPrice, MessageId, ParseMode,
+    PreCheckoutQuery, ReplyParameters, ThreadId, User as TgUser,
 };
 use teloxide::utils::command::BotCommands;
 use tzibbur_api::models::{CreateGroupRequest, LegalDocKey, VerifyAuthRequest};
@@ -221,10 +223,13 @@ pub async fn on_command(
         }
         Command::Add(arg) => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
-            let phones = parse_phones(&arg);
+            let (phones, bad) = parse_phones(&app, &arg);
             if phones.is_empty() {
-                say(&bot, &msg, "Usage inside a group topic: <code>/add +14155550123, +14155550124</code>").await?;
+                say(&bot, &msg, "Usage inside a group topic: <code>/add 212-736-5000, +972 50 123 4567</code>").await?;
                 return Ok(());
+            }
+            if !bad.is_empty() {
+                say(&bot, &msg, format!("Skipping (not valid numbers): {}", escape_html(&bad.join(", ")))).await?;
             }
             match rt.client().add_members(&conv.group_id, &phones, None).await {
                 Ok(out) => {
@@ -335,13 +340,8 @@ fn settings_kb(s: &AccountSettings) -> InlineKeyboardMarkup {
     ])
 }
 
-fn parse_phones(arg: &str) -> Vec<String> {
-    arg.split([',', ' ', ';', '\n'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(normalize_phone)
-        .filter(|p| looks_like_e164(p))
-        .collect()
+fn parse_phones(app: &App, arg: &str) -> (Vec<String>, Vec<String>) {
+    parse_phone_list(arg, &app.shared.cfg.default_region)
 }
 
 fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> String {
@@ -442,29 +442,81 @@ async fn begin_connect(bot: &BridgeBot, msg: &Message, app: &App, dialogue: &Dia
         }
     }
     dialogue.update(State::AwaitPhone).await?;
-    let mut text = String::from(
-        "📱 Send your phone number in international format, e.g. <code>+14155550123</code>.\n\nTzibbur will text you a 6-digit code. I never store the code, only the resulting session (encrypted).",
-    );
-    if app.shared.cfg.public_url.is_some() {
-        text.push_str("\n\nPrefer not to type it here? Use the ≡ menu button to sign in on a secure page instead.");
-    }
-    say(bot, msg, text).await
+    send_phone_prompt(bot, msg.chat.id, app).await
 }
 
-pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog) -> Result<()> {
-    let raw = msg.text().unwrap_or_default();
-    let phone = normalize_phone(raw);
-    if !looks_like_e164(&phone) {
-        say(
-            &bot,
-            &msg,
-            "That doesn't look like a phone number. Try <code>+14155550123</code> (or /cancel).",
-        )
-        .await?;
-        return Ok(());
+/// Ask for the phone with a one-tap "share my number" button.
+pub async fn send_phone_prompt(bot: &BridgeBot, chat: ChatId, app: &App) -> Result<()> {
+    let mut text = format!(
+        "📱 Tap the button to use your Telegram number, or type it any way you like — <code>212-736-5000</code>, <code>+972 50 123 4567</code>… (numbers without a country code are treated as {}).\n\nTzibbur will text you a 6-digit code. I never store the code, only the resulting session (encrypted).",
+        app.shared.cfg.default_region
+    );
+    if app.shared.cfg.public_url.is_some() {
+        text.push_str(
+            "\n\nPrefer a form? Use the ≡ menu button to sign in on a secure page instead.",
+        );
     }
-    dialogue.update(State::AwaitName { phone }).await?;
-    say(&bot, &msg, "What display name should other Tzibbur members see? Reply <b>skip</b> if you already have a Tzibbur account.").await
+    let kb = KeyboardMarkup::new(vec![vec![
+        KeyboardButton::new("📱 Use my Telegram number").request(ButtonRequest::Contact)
+    ]])
+    .resize_keyboard()
+    .one_time_keyboard();
+    bot.send_message(chat, text)
+        .parse_mode(HTML)
+        .reply_markup(kb)
+        .await?;
+    Ok(())
+}
+
+pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<App>) -> Result<()> {
+    let tg = from(&msg)?;
+    // Shared contact (the button), or typed text.
+    let raw = match msg.contact() {
+        Some(c) => {
+            if c.user_id.map(|u| u != tg.id).unwrap_or(false) {
+                say(
+                    &bot,
+                    &msg,
+                    "That's someone else's contact — share <b>your own</b> number, or type it.",
+                )
+                .await?;
+                return Ok(());
+            }
+            c.phone_number.clone()
+        }
+        None => msg.text().unwrap_or_default().to_owned(),
+    };
+    let phone = match parse_phone(&raw, &app.shared.cfg.default_region) {
+        Ok(p) => p,
+        Err(why) => {
+            say(
+                &bot,
+                &msg,
+                format!(
+                    "Hmm, I couldn't read that as a phone number ({}). Try <code>212-736-5000</code> or <code>+1 555 010 0123</code>, tap the button, or /cancel.",
+                    escape_html(&why)
+                ),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    dialogue
+        .update(State::AwaitName {
+            phone: phone.clone(),
+        })
+        .await?;
+    bot.send_message(
+        msg.chat.id,
+        format!(
+            "Using <b>{}</b>.\n\nWhat display name should other Tzibbur members see? Reply <b>skip</b> if you already have a Tzibbur account.",
+            escape_html(&phone)
+        ),
+    )
+    .parse_mode(HTML)
+    .reply_markup(KeyboardRemove::new())
+    .await?;
+    Ok(())
 }
 
 pub async fn on_name(
@@ -736,19 +788,31 @@ pub async fn on_group_phones(
     let tg = from(&msg)?.clone();
     let rt = connected_runtime(&app, &tg).await?;
     let raw = msg.text().unwrap_or_default();
-    let phones = if raw.trim().eq_ignore_ascii_case("skip") {
-        vec![]
+    let skip = raw.trim().eq_ignore_ascii_case("skip");
+    let (phones, bad) = if skip {
+        (vec![], vec![])
     } else {
-        parse_phones(raw)
+        parse_phones(&app, raw)
     };
-    if !raw.trim().eq_ignore_ascii_case("skip") && phones.is_empty() {
+    if !skip && phones.is_empty() {
         say(
             &bot,
             &msg,
-            "Send phone numbers like <code>+14155550123, +14155550124</code>, or <b>skip</b>.",
+            "Send phone numbers like <code>212-736-5000, +972 50 123 4567</code>, or <b>skip</b>.",
         )
         .await?;
         return Ok(());
+    }
+    if !bad.is_empty() {
+        say(
+            &bot,
+            &msg,
+            format!(
+                "Skipping (not valid numbers): {}",
+                escape_html(&bad.join(", "))
+            ),
+        )
+        .await?;
     }
     dialogue.exit().await?;
     let req = CreateGroupRequest::standard(&name, &category);
@@ -865,9 +929,7 @@ pub async fn on_callback(
         }
         "connect" | "reconnect" => {
             dialogue.update(State::AwaitPhone).await?;
-            bot.send_message(chat_id, "📱 Send your phone number in international format, e.g. <code>+14155550123</code>.")
-                .parse_mode(HTML)
-                .await?;
+            send_phone_prompt(&bot, chat_id, &app).await?;
         }
         "disc:keep" | "disc:purge" => {
             if let Some(a) = app.account_for(tg.id.0 as i64).await? {

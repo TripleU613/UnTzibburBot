@@ -27,6 +27,8 @@ pub struct Config {
     pub history_import: u32,
     /// Prefix for Directus collections (`BRIDGE_COLLECTION_PREFIX`), default `bridge_`.
     pub collection_prefix: String,
+    /// Country assumed for phone numbers typed without a country code (`BRIDGE_DEFAULT_REGION`), default `US`.
+    pub default_region: String,
 }
 
 fn env(name: &str) -> Option<String> {
@@ -86,6 +88,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20),
             collection_prefix: env("BRIDGE_COLLECTION_PREFIX").unwrap_or_else(|| "bridge_".into()),
+            default_region: env("BRIDGE_DEFAULT_REGION").unwrap_or_else(|| "US".into()),
         })
     }
 }
