@@ -528,13 +528,6 @@ fn settings_kb(s: &AccountSettings) -> InlineKeyboardMarkup {
         )],
         vec![(
             &format!(
-                "{} Mark read on Tzibbur after forwarding",
-                on(s.auto_mark_read)
-            ),
-            "set:auto_mark_read".into(),
-        )],
-        vec![(
-            &format!(
                 "{} Show phone numbers for unnamed senders",
                 on(s.show_phone_numbers)
             ),

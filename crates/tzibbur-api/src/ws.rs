@@ -572,17 +572,16 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                         }
                         Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
                         Some(Ok(Message::Binary(b))) => {
-                            match serde_json::from_slice::<ServerFrame>(&b) {
-                                Ok(f) => if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; },
-                                Err(e) => tracing::debug!(error = %e, "socket: unparseable binary frame"),
+                            if let Some(f) = decode_frame(&b) {
+                                if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; }
                             }
                         }
                         Some(Ok(Message::Text(t))) => {
-                            match serde_json::from_str::<ServerFrame>(&t) {
-                                Ok(f) => if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; },
-                                Err(e) => tracing::debug!(error = %e, frame = %t, "socket: unknown frame"),
+                            if let Some(f) = decode_frame(t.as_bytes()) {
+                                if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; }
                             }
                         }
+
                     }
                 }
             }
@@ -604,6 +603,60 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
             break;
         }
     }
+}
+
+/// Decode a server frame leniently: unknown `type`s that still carry `messages`
+/// (or a single `message`) are treated as message pushes; anything else is
+/// logged at WARN with its keys so a protocol change is visible in the logs.
+fn decode_frame(bytes: &[u8]) -> Option<ServerFrame> {
+    if let Ok(f) = serde_json::from_slice::<ServerFrame>(bytes) {
+        return Some(f);
+    }
+    let v: Value = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(error = %e, "socket: non-JSON frame");
+            return None;
+        }
+    };
+    let ty = v
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned();
+    let group_id = v.get("groupId").and_then(Value::as_str).map(str::to_owned);
+    let mut list: Vec<MessageDto> = Vec::new();
+    if let Some(arr) = v.get("messages").and_then(Value::as_array) {
+        list = arr
+            .iter()
+            .filter_map(|m| serde_json::from_value(m.clone()).ok())
+            .collect();
+    } else if let Some(m) = v.get("message").filter(|m| m.is_object()) {
+        if let Ok(m) = serde_json::from_value::<MessageDto>(m.clone()) {
+            list.push(m);
+        }
+    } else if v.get("seq").is_some() && v.get("body").is_some() {
+        if let Ok(m) = serde_json::from_value::<MessageDto>(v.clone()) {
+            list.push(m);
+        }
+    }
+    if !list.is_empty() {
+        let gid = group_id.or_else(|| list[0].group_id.clone());
+        if let Some(gid) = gid {
+            tracing::info!(%ty, n = list.len(), "socket: message push in non-standard frame shape");
+            return Some(ServerFrame::Messages {
+                group_id: gid,
+                messages: list,
+                has_more: false,
+            });
+        }
+    }
+    let keys = v
+        .as_object()
+        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    tracing::warn!(%ty, keys, "socket: unknown frame type (ignored)");
+    None
 }
 
 /// Returns `Some(reason)` when the connection must be torn down.

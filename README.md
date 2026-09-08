@@ -131,6 +131,7 @@ disagree, the wire wins and the app's spelling is still accepted:
 | Devices | `deviceModel`, `registeredAt`, `lastSeenAt`, `userId`, `imei`, `serialNumber`. |
 | WS `hello` | `{"protocolVersion": 1, "userId", "deviceId", "limits": {"heartbeatSeconds": 30, "maxConnectionsPerDevice": 3, "maxFrameBytes": 16384}}`, surfaced as `SocketEvent::Hello`. The server also sends WebSocket-level pings. |
 | WS `messages` | Carries `hasMore` alongside `groupId` and `messages`. |
+| WS/REST `ack` | A **delivery** acknowledgement: advances the device's `deliveredSeq` (drops the group from `GET /v1/pending`) and leaves `readSeq`/`unreadCount` untouched. A device that has not acked is re-sent everything on each connect and does not appear to receive live pushes. The sync engine acks every stored batch. |
 | Timestamps | RFC 3339 strings; epoch milliseconds are accepted too. |
 
 Still unconfirmed (no write traffic was sent): the exact slug for an

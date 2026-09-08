@@ -597,11 +597,6 @@ impl AccountRuntime {
             if let Err(e) = self.local.redact_messages(&conv.group_id, max_seq) {
                 tracing::warn!(error = %e, "redaction failed");
             }
-            if settings.auto_mark_read {
-                if let Err(e) = self.sync.mark_read(&conv.group_id, max_seq).await {
-                    tracing::debug!(error = %e, "auto mark read failed");
-                }
-            }
         }
         Ok(())
     }

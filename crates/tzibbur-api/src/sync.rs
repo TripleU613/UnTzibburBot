@@ -121,6 +121,8 @@ pub struct SyncEngine {
     events: broadcast::Sender<SyncEvent>,
     task: Mutex<Option<(JoinHandle<()>, watch::Sender<bool>)>>,
     pending_limit: Option<u32>,
+    /// How often to page every group over REST as a safety net (default 60s).
+    catch_up_interval: std::time::Duration,
 }
 
 impl SyncEngine {
@@ -155,6 +157,7 @@ impl SyncEngine {
             events,
             task: Mutex::new(None),
             pending_limit: None,
+            catch_up_interval: std::time::Duration::from_secs(60),
         })
     }
 
@@ -258,6 +261,7 @@ impl SyncEngine {
         if self.sync_state() != SyncState::Connected {
             self.rest_catch_up().await?;
         }
+        self.catch_up_all_groups().await;
         self.outbox.poke();
         Ok(())
     }
@@ -266,9 +270,20 @@ impl SyncEngine {
         let mut events = self.socket.subscribe();
         let mut state_rx = self.socket.watch_state();
         let mut outbox_events = self.outbox.subscribe();
+        let mut safety_net = tokio::time::interval(self.catch_up_interval);
+        safety_net.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        safety_net.tick().await; // first tick fires immediately; skip it
         loop {
             tokio::select! {
                 _ = stop_rx.changed() => break,
+                _ = safety_net.tick() => {
+                    if self.sync_state() == SyncState::Connected {
+                        self.catch_up_all_groups().await;
+                self.ack_all_delivered().await;
+                    } else if let Err(e) = self.refresh_now().await {
+                        tracing::debug!(error = %e, "sync: periodic refresh failed");
+                    }
+                }
                 ob = outbox_events.recv() => {
                     if let Ok(crate::outbox::OutboxEvent::Confirmed { client_message_id, message }) = ob {
                         self.emit(SyncEvent::EchoConfirmed {
@@ -312,6 +327,9 @@ impl SyncEngine {
                 if let Err(e) = self.rest_catch_up().await {
                     tracing::warn!(error = %e, "sync: catch-up on connect failed");
                 }
+                // Safety net: pending/WS may not carry everything; page each group from its
+                // newest cached seq so nothing is missed regardless of delivery semantics.
+                self.catch_up_all_groups().await;
                 self.outbox.poke();
             }
             SocketEvent::Disconnected { reason } => {
@@ -355,6 +373,13 @@ impl SyncEngine {
             }
         }
         let outcome = self.store.store_incoming_batch(group_id, batch)?;
+        // Delivery acknowledgement. The server's `ack` advances the device's `deliveredSeq`
+        // (verified live: `readSeq` is untouched) and it withholds further pushes until
+        // the device has acknowledged what it was sent. The batch is already persisted, so
+        // acking here cannot lose anything.
+        if let Some(seq) = outcome.plan.max_seq {
+            self.ack_delivered(group_id, seq).await;
+        }
         for echo in &outcome.plan.echo_confirmations {
             self.emit(SyncEvent::EchoConfirmed {
                 group_id: group_id.to_owned(),
@@ -517,6 +542,59 @@ impl SyncEngine {
         Ok(total)
     }
 
+    /// Tell the server this device holds everything up to `seq` for the group
+    /// (WS frame when live, REST otherwise). Errors are logged, never fatal.
+    pub async fn ack_delivered(&self, group_id: &str, seq: i64) {
+        if seq <= 0 {
+            return;
+        }
+        let r = if self.sync_state() == SyncState::Connected {
+            self.socket.ack(group_id, seq).await
+        } else {
+            self.client.ack(group_id, seq).await
+        };
+        if let Err(e) = r {
+            tracing::debug!(error = %e, group_id, seq, "sync: delivery ack failed");
+        }
+    }
+
+    /// Ack the newest cached seq of every group (used on connect so a device that was
+    /// behind is marked caught up even for batches stored by earlier runs).
+    pub async fn ack_all_delivered(&self) {
+        if let Ok(groups) = self.store.groups() {
+            for g in groups {
+                if let Ok(Some(seq)) = self.store.max_seq(&g.id) {
+                    self.ack_delivered(&g.id, seq).await;
+                }
+            }
+        }
+    }
+
+    /// Run [`Self::catch_up_group`] for every non-deleted group; errors are logged.
+    pub async fn catch_up_all_groups(&self) -> usize {
+        let groups = match self.store.groups() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!(error = %e, "sync: cannot list groups for catch-up");
+                return 0;
+            }
+        };
+        let mut total = 0;
+        for g in groups {
+            match self.catch_up_group(&g.id).await {
+                Ok(n) => total += n,
+                Err(e) => tracing::warn!(error = %e, group = %g.id, "sync: group catch-up failed"),
+            }
+        }
+        if total > 0 {
+            tracing::info!(
+                stored = total,
+                "sync: catch-up found messages the socket did not deliver"
+            );
+        }
+        total
+    }
+
     /// Page `GET /v1/groups/{id}/messages?afterSeq=` from the newest stored seq
     /// until the server reports no `nextAfterSeq`. Returns messages stored.
     pub async fn catch_up_group(&self, group_id: &str) -> Result<usize> {
@@ -662,7 +740,9 @@ impl SyncEngine {
         self.outbox.enqueue(group_id, body)
     }
 
-    /// Mark read locally, then ack over the socket if live, else via REST.
+    /// Mark read locally and ack on the server. Note: the server's `ack` is a *delivery*
+    /// acknowledgement (it advances `deliveredSeq`, not `readSeq`), and the engine already
+    /// acks every stored batch, so this mainly maintains the local `lastReadSeq` bookmark.
     pub async fn mark_read(&self, group_id: &str, seq: i64) -> Result<()> {
         self.store.mark_read(group_id, seq)?;
         if self.sync_state() == SyncState::Connected {

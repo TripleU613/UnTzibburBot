@@ -109,7 +109,7 @@ impl AccountStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AccountSettings {
-    /// Mark groups read on Tzibbur once messages were forwarded to Telegram.
+    /// Legacy (no longer shown): the server's ack is a delivery ack and is always sent.
     pub auto_mark_read: bool,
     /// Create Telegram topics for new Tzibbur groups automatically.
     pub auto_topics: bool,
