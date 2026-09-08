@@ -70,7 +70,10 @@ async fn main() -> Result<()> {
         last_alert: Default::default(),
         cfg: cfg.clone(),
         store,
-        cipher: crypto::SessionCipher::new(cfg.master_key),
+        cipher: crypto::SessionCipher::new(crypto::KeyRing::new(
+            cfg.master_key,
+            cfg.master_key_previous,
+        )),
         bot: bot.clone(),
         bot_topics_enabled: AtomicBool::new(topics_enabled),
     });
@@ -80,6 +83,7 @@ async fn main() -> Result<()> {
         bot_username: me.username().to_owned(),
         dialogue_activity: Default::default(),
         pending_splits: Default::default(),
+        auth_attempts: Default::default(),
         started_at: std::time::Instant::now(),
     });
 

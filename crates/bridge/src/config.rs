@@ -14,6 +14,8 @@ pub struct Config {
     pub directus_token: String,
     /// 32-byte key, base64 (`BRIDGE_MASTER_KEY`), used to encrypt Tzibbur sessions at rest.
     pub master_key: [u8; 32],
+    /// Previous master key during rotation (`BRIDGE_MASTER_KEY_PREVIOUS`).
+    pub master_key_previous: Option<[u8; 32]>,
     /// Tzibbur API base (`TZIBBUR_BASE_URL`), default production.
     pub tzibbur_base_url: String,
     /// Directory for per-account SQLite caches (`BRIDGE_DATA_DIR`).
@@ -59,17 +61,11 @@ impl Config {
         let key_b64 = env("BRIDGE_MASTER_KEY").context(
             "BRIDGE_MASTER_KEY is required (32 random bytes, base64). Generate with: openssl rand -base64 32",
         )?;
-        let key = base64::engine::general_purpose::STANDARD
-            .decode(key_b64.as_bytes())
-            .context("BRIDGE_MASTER_KEY is not valid base64")?;
-        if key.len() != 32 {
-            bail!(
-                "BRIDGE_MASTER_KEY must decode to exactly 32 bytes, got {}",
-                key.len()
-            );
-        }
-        let mut master_key = [0u8; 32];
-        master_key.copy_from_slice(&key);
+        let master_key = decode_key("BRIDGE_MASTER_KEY", &key_b64)?;
+        let master_key_previous = match env("BRIDGE_MASTER_KEY_PREVIOUS") {
+            Some(b) => Some(decode_key("BRIDGE_MASTER_KEY_PREVIOUS", &b)?),
+            None => None,
+        };
         let public_url = match env("BRIDGE_PUBLIC_URL") {
             Some(u) => Some(
                 u.parse::<url::Url>()
@@ -82,6 +78,7 @@ impl Config {
             directus_url,
             directus_token,
             master_key,
+            master_key_previous,
             tzibbur_base_url: env("TZIBBUR_BASE_URL")
                 .unwrap_or_else(|| tzibbur_api::constants::DEFAULT_BASE_URL.into()),
             data_dir: env("BRIDGE_DATA_DIR")
@@ -112,4 +109,16 @@ impl Config {
             },
         })
     }
+}
+
+fn decode_key(name: &str, b64: &str) -> Result<[u8; 32]> {
+    let key = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim().as_bytes())
+        .with_context(|| format!("{name} is not valid base64"))?;
+    if key.len() != 32 {
+        bail!("{name} must decode to exactly 32 bytes, got {}", key.len());
+    }
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&key);
+    Ok(out)
 }

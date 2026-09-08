@@ -445,6 +445,18 @@ impl Store {
         Ok(())
     }
 
+    pub async fn set_account_session(&self, id: i64, blob: &str) -> Result<()> {
+        let _: Value = self
+            .d
+            .update(
+                &self.n.accounts,
+                id,
+                &json!({"encrypted_session": blob, "updated_at": now()}),
+            )
+            .await?;
+        Ok(())
+    }
+
     pub async fn update_account_settings(&self, id: i64, settings: &AccountSettings) -> Result<()> {
         let _: Value = self
             .d

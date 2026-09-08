@@ -1,19 +1,51 @@
+# Fast CI: one job, one cache. Documentation-only changes (Markdown, docs/, assets/, templates)
+# skip the toolchain entirely and still report the required `test` check as passed.
 name: CI
 on:
   push:
     branches: [main]
   pull_request:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: What changed
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            engine:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'Dockerfile'
+              - '.dockerignore'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+      - name: Docs-only change
+        if: steps.changes.outputs.engine != 'true'
+        run: echo "No engine files changed. Nothing to build."
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.changes.outputs.engine == 'true'
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - name: Docker build (no push)
-        run: docker build -t untzibburbot:ci .
+        if: steps.changes.outputs.engine == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format
+        if: steps.changes.outputs.engine == 'true'
+        run: cargo fmt --all --check
+      - name: Clippy
+        if: steps.changes.outputs.engine == 'true'
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Test
+        if: steps.changes.outputs.engine == 'true'
+        run: cargo test --workspace --locked

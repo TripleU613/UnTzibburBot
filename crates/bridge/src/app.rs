@@ -16,12 +16,47 @@ pub struct App {
     /// Over-limit messages waiting for the user to confirm splitting: (chat, message id) -> (conv id, text, when).
     pub pending_splits: dashmap::DashMap<(i64, i32), (i64, String, std::time::Instant)>,
     pub started_at: std::time::Instant,
+    /// Sign-in attempts per Telegram user (sliding one-hour window), to slow down OTP abuse.
+    pub auth_attempts: dashmap::DashMap<(i64, AuthStep), Vec<std::time::Instant>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum AuthStep {
+    /// Requesting a code (sends an SMS to the phone).
+    Start,
+    /// Submitting a code.
+    Verify,
+}
+
+impl AuthStep {
+    fn limit_per_hour(self) -> usize {
+        match self {
+            AuthStep::Start => 5,
+            AuthStep::Verify => 15,
+        }
+    }
 }
 
 /// A multi-step flow (sign-in, new group, rename) is abandoned after this long.
 pub const DIALOGUE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 impl App {
+    /// Count an attempt and report whether this Telegram user is still within the hourly limit.
+    pub fn allow_auth(&self, telegram_user_id: i64, step: AuthStep) -> bool {
+        let now = std::time::Instant::now();
+        let window = std::time::Duration::from_secs(3600);
+        let mut entry = self
+            .auth_attempts
+            .entry((telegram_user_id, step))
+            .or_default();
+        entry.retain(|t| now.duration_since(*t) < window);
+        if entry.len() >= step.limit_per_hour() {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
+
     /// Record activity for a chat's flow and report whether the flow is still fresh.
     pub fn touch_dialogue(&self, chat_id: i64) -> bool {
         let now = std::time::Instant::now();
@@ -120,7 +155,10 @@ impl App {
                     .await?;
             }
         }
-        let blob = self.shared.cipher.encrypt(&session.token)?;
+        let blob = self
+            .shared
+            .cipher
+            .encrypt(&session.token, &session.user.id)?;
         let account = self
             .shared
             .store
@@ -171,5 +209,15 @@ impl App {
         self.registry
             .get(account_id)
             .ok_or_else(|| anyhow!("account {account_id} is not running"))
+    }
+}
+
+#[cfg(test)]
+mod auth_limit_tests {
+    use super::AuthStep;
+
+    #[test]
+    fn limits_are_sane() {
+        assert!(AuthStep::Start.limit_per_hour() < AuthStep::Verify.limit_per_hour());
     }
 }

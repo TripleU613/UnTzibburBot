@@ -99,10 +99,73 @@ impl std::fmt::Debug for SqliteStore {
     }
 }
 
+fn hex_key(key: &[u8; 32]) -> String {
+    let hex = key.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    format!("x'{hex}'")
+}
+
 impl SqliteStore {
-    /// Open (or create) the database file and run migrations.
+    /// Open (or create) the database file and run migrations (unencrypted).
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Self::from_connection(Connection::open(path)?)
+    }
+
+    /// Open (or create) an encrypted database (SQLCipher, AES-256) with a 32-byte raw key.
+    ///
+    /// `previous_keys` are tried when `key` does not open the file; on success the database is
+    /// re-keyed to `key` (master-key rotation). A pre-existing unencrypted file at `path` is
+    /// migrated in place on first open.
+    pub fn open_encrypted(
+        path: impl AsRef<Path>,
+        key: &[u8; 32],
+        previous_keys: &[[u8; 32]],
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let key_pragma = hex_key(key);
+        if let Some(conn) = Self::try_open_keyed(path, &key_pragma)? {
+            return Self::from_connection(conn);
+        }
+        for old in previous_keys {
+            if let Some(conn) = Self::try_open_keyed(path, &hex_key(old))? {
+                tracing::info!(path = %path.display(), "re-keying cache to the current master key");
+                conn.pragma_update(None, "rekey", &key_pragma)?;
+                return Self::from_connection(conn);
+            }
+        }
+        // Not readable with any key: assume a plaintext database from an earlier version.
+        tracing::info!(path = %path.display(), "encrypting existing plaintext cache");
+        let tmp = path.with_extension("db.enc");
+        let _ = std::fs::remove_file(&tmp);
+        {
+            let plain = Connection::open(path)?;
+            plain
+                .query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+                .map_err(|_| {
+                    AppError::Store("cache is neither readable with the key nor plaintext".into())
+                })?;
+            plain.execute(
+                "ATTACH DATABASE ?1 AS enc KEY ?2",
+                params![tmp.to_string_lossy().to_string(), key_pragma],
+            )?;
+            plain.query_row("SELECT sqlcipher_export('enc')", [], |_| Ok(()))?;
+            plain.execute("DETACH DATABASE enc", [])?;
+        }
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
+        }
+        std::fs::rename(&tmp, path).map_err(|e| AppError::Store(format!("replace cache: {e}")))?;
+        let conn = Self::try_open_keyed(path, &key_pragma)?
+            .ok_or_else(|| AppError::Store("encrypted cache unreadable after migration".into()))?;
+        Self::from_connection(conn)
+    }
+
+    fn try_open_keyed(path: &Path, key_pragma: &str) -> Result<Option<Connection>> {
+        let conn = Connection::open(path)?;
+        conn.pragma_update(None, "key", key_pragma)?;
+        match conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())) {
+            Ok(()) => Ok(Some(conn)),
+            Err(_) => Ok(None),
+        }
     }
 
     /// In-memory database (tests, ephemeral bridges).
@@ -1134,6 +1197,51 @@ mod tests {
             client_message_id: cmid.map(str::to_owned),
             created_at: seq * 1000,
         }
+    }
+
+    #[test]
+    fn encrypted_open_and_plaintext_migration() {
+        let dir = std::env::temp_dir().join(format!("tzibbur-enc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cache.db");
+        // Start plaintext, write a row.
+        {
+            let s = SqliteStore::open(&path).unwrap();
+            s.upsert_group(&group("g")).unwrap();
+        }
+        let key = [7u8; 32];
+        // Migrates and reads the row back.
+        {
+            let s = SqliteStore::open_encrypted(&path, &key, &[]).unwrap();
+            assert!(s.get_group("g").unwrap().is_some());
+        }
+        // Wrong key fails, right key works.
+        assert!(SqliteStore::open_encrypted(&path, &[8u8; 32], &[]).is_err());
+        assert!(SqliteStore::open_encrypted(&path, &key, &[])
+            .unwrap()
+            .get_group("g")
+            .unwrap()
+            .is_some());
+        // Rotation: new key with the old one as fallback re-keys the file.
+        let new_key = [9u8; 32];
+        assert!(SqliteStore::open_encrypted(&path, &new_key, &[key])
+            .unwrap()
+            .get_group("g")
+            .unwrap()
+            .is_some());
+        assert!(SqliteStore::open_encrypted(&path, &new_key, &[])
+            .unwrap()
+            .get_group("g")
+            .unwrap()
+            .is_some());
+        assert!(SqliteStore::open_encrypted(&path, &key, &[]).is_err());
+        // Plaintext open fails.
+        assert!(Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM sqlite_master", [], |r| r
+                .get::<_, i64>(0))
+            .is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

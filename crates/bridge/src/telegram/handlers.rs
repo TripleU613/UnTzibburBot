@@ -963,6 +963,18 @@ async fn on_name_inner(
             }
         }
     };
+    if !app.allow_auth(msg.chat.id.0, crate::app::AuthStep::Start) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        say(
+            &bot,
+            &msg,
+            &app,
+            "Too many sign-in attempts. Try again in an hour.",
+        )
+        .await?;
+        return Ok(());
+    }
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
         .device(app.shared.cfg.device.clone())
@@ -1042,6 +1054,18 @@ async fn on_code_inner(
     bot.delete_message(msg.chat.id, msg.id).await.ok();
     if !is_valid_otp(&code) {
         say(&bot, &msg, &app, "Send the 6-digit code, or /cancel.").await?;
+        return Ok(());
+    }
+    if !app.allow_auth(msg.chat.id.0, crate::app::AuthStep::Verify) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        say(
+            &bot,
+            &msg,
+            &app,
+            "Too many code attempts. Start again with /connect in an hour.",
+        )
+        .await?;
         return Ok(());
     }
     let client = TzibburClient::builder()

@@ -5,6 +5,18 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+- Local per-account caches are SQLCipher databases (AES-256); existing plaintext caches are converted on first start.
+- Session tokens are encrypted under per-account keys derived with HKDF from the master key; old blobs are re-wrapped on first use.
+- Master-key rotation with `BRIDGE_MASTER_KEY_PREVIOUS`.
+- Nightly database dumps can be encrypted to an `age` public key (`BACKUP_AGE_RECIPIENT`).
+- Sign-in requests and code attempts are limited per Telegram user and hour.
+- The bridge container runs with a read-only root filesystem, no capabilities and `no-new-privileges`.
+- Dependency audit workflow (RustSec) and dependency review on pull requests.
+
+### Changed
+- CI runs a single cached job and skips the toolchain on documentation-only changes; deploys skip documentation-only pushes.
+
 ## [v0.1.0] - 2026-09-08
 
 First public release.

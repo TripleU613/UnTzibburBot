@@ -57,20 +57,31 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    security_opt: ["no-new-privileges:true"]
     environment:
       PGHOST: db
       PGUSER: directus
       PGPASSWORD: ${DB_PASSWORD}
       PGDATABASE: directus
+      # Optional: an age public key (age1...). When set, every dump is encrypted to it and only
+      # the matching private key (kept off this host) can read the backups.
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
     volumes:
       - backups:/backups
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        if [ -n "$$BACKUP_AGE_RECIPIENT" ]; then apk add --no-cache age >/dev/null; fi
         while true; do
-          f=/backups/directus-$$(date +%Y%m%d-%H%M).sql.gz
-          pg_dump --no-owner | gzip > "$$f" && echo "backup: $$f"
-          find /backups -name 'directus-*.sql.gz' -mtime +14 -delete
+          stamp=$$(date +%Y%m%d-%H%M)
+          if [ -n "$$BACKUP_AGE_RECIPIENT" ]; then
+            f=/backups/directus-$$stamp.sql.gz.age
+            pg_dump --no-owner | gzip | age -r "$$BACKUP_AGE_RECIPIENT" > "$$f" && echo "backup (encrypted): $$f"
+          else
+            f=/backups/directus-$$stamp.sql.gz
+            pg_dump --no-owner | gzip > "$$f" && echo "backup: $$f"
+          fi
+          find /backups -name 'directus-*.sql.gz*' -mtime +14 -delete
           sleep 86400
         done
 
@@ -78,6 +89,11 @@ services:
     build: .
     image: tzibbur-telegram-bridge:latest
     restart: unless-stopped
+    # Least privilege: read-only root filesystem, no capabilities, no privilege escalation.
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
     depends_on:
       directus:
         condition: service_healthy
@@ -91,6 +107,8 @@ services:
       DIRECTUS_URL: http://directus:8055
       DIRECTUS_TOKEN: ${DIRECTUS_TOKEN}
       BRIDGE_MASTER_KEY: ${BRIDGE_MASTER_KEY:?set BRIDGE_MASTER_KEY in .env (openssl rand -base64 32)}
+      # Set while rotating the master key; remove once every account has reconnected or been re-wrapped.
+      BRIDGE_MASTER_KEY_PREVIOUS: ${BRIDGE_MASTER_KEY_PREVIOUS:-}
       # Optional: public HTTPS URL of this service → webhook mode + Mini App login button.
       BRIDGE_PUBLIC_URL: ${BRIDGE_PUBLIC_URL:-}
       BRIDGE_USE_WEBHOOK: ${BRIDGE_USE_WEBHOOK:-false}

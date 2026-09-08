@@ -121,8 +121,14 @@ async fn api_start(
     State(app): State<Arc<App>>,
     Json(req): Json<StartReq>,
 ) -> Result<Json<StartResp>, (StatusCode, Json<ErrResp>)> {
-    let _user = verify_init_data(&req.init_data, &app.shared.cfg.telegram_token, 3600)
+    let user = verify_init_data(&req.init_data, &app.shared.cfg.telegram_token, 3600)
         .map_err(|e| err(StatusCode::UNAUTHORIZED, e))?;
+    if !app.allow_auth(user.id.0 as i64, crate::app::AuthStep::Start) {
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many sign-in attempts, try again in an hour",
+        ));
+    }
     let phone = parse_phone(&req.phone, &app.shared.cfg.default_region)
         .map_err(|why| err(StatusCode::BAD_REQUEST, format!("phone: {why}")))?;
     let client = TzibburClient::builder()
@@ -156,6 +162,12 @@ async fn api_verify(
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrResp>)> {
     let user = verify_init_data(&req.init_data, &app.shared.cfg.telegram_token, 3600)
         .map_err(|e| err(StatusCode::UNAUTHORIZED, e))?;
+    if !app.allow_auth(user.id.0 as i64, crate::app::AuthStep::Verify) {
+        return Err(err(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many code attempts, try again in an hour",
+        ));
+    }
     let code: String = req.code.chars().filter(|c| c.is_ascii_digit()).collect();
     if !is_valid_otp(&code) {
         return Err(err(StatusCode::BAD_REQUEST, "code must be 6 digits"));

@@ -5,3 +5,4 @@
 *.db-shm
 test-account.env
 *.env
+backup-age.key

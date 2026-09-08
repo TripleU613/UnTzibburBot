@@ -103,6 +103,30 @@ Tzibbur is the source of truth; nothing the bridge stores is needed to recover m
 | Bridge `/data` | sync cache, text until delivered | nothing | rebuilt from Tzibbur on connect |
 | Telegram | the topics | sends retried by the flush | a deleted topic is recreated |
 
+## Security model
+
+Everything at rest is encrypted with keys derived from one master key (`crates/bridge/src/crypto.rs`):
+
+| Data | Where | Protection |
+|---|---|---|
+| Session token per account | Directus `accounts.encrypted_session` | AES-256-GCM, key = HKDF(master, "session", tzibbur user id); blob prefixed `v2:` |
+| Local cache per account (messages until delivered, members, outbox) | `/data/accounts/<id>.db` | SQLCipher (AES-256), key = HKDF(master, "cache", tzibbur user id) |
+| Database dumps | `backups` volume | gzip, optionally `age`-encrypted to `BACKUP_AGE_RECIPIENT` |
+
+Rotation: set `BRIDGE_MASTER_KEY_PREVIOUS` to the old key and a fresh `BRIDGE_MASTER_KEY`. On the next
+start every running account's session is decrypted with whichever key works and re-encrypted under the
+current one; caches are re-keyed in place (`PRAGMA rekey`). Legacy blobs from before v0.2 (raw AES-GCM
+under the master key, no prefix) are upgraded the same way. Plaintext caches from before v0.2 are
+converted with `sqlcipher_export` on first open.
+
+Sign-in abuse: `App::allow_auth` allows 5 code requests and 15 code attempts per Telegram user per hour,
+in the bot flow and in the Mini App alike.
+
+The bridge container runs read-only with all capabilities dropped; it only writes to `/data` and `/tmp`.
+
+What this does not give you: end-to-end encryption. Tzibbur and Telegram both see message text, so
+the bridge has to as well, for the moment it forwards a message. See `SECURITY.md`.
+
 ## License
 
 AGPL-3.0-or-later. Anyone may use, study, change and redistribute the code, including running it as a service, provided the complete corresponding source of their version is made available to its users under the same license. A closed or proprietary fork is not permitted.

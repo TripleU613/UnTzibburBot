@@ -1,0 +1,37 @@
+# Dependency security: known-vulnerability audit of Cargo.lock on every change to it and weekly,
+# plus GitHub's dependency review on pull requests.
+name: Security
+on:
+  push:
+    branches: [main]
+    paths: ['Cargo.lock', '.github/workflows/security.yml']
+  pull_request:
+    paths: ['Cargo.lock', '.github/workflows/security.yml']
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+  checks: write
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure

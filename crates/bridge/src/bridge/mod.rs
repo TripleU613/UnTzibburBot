@@ -155,7 +155,12 @@ impl AccountRuntime {
         let dir = shared.cfg.data_dir.join("accounts");
         std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
         let db_path = dir.join(format!("{}.db", account.id));
-        let local: Arc<dyn LocalStore> = Arc::new(SqliteStore::open(&db_path)?);
+        let ring = shared.cipher.ring();
+        let local: Arc<dyn LocalStore> = Arc::new(SqliteStore::open_encrypted(
+            &db_path,
+            &ring.cache_key(&account.tzibbur_user_id),
+            &ring.previous_cache_keys(&account.tzibbur_user_id),
+        )?);
         let socket = Arc::new(TzibburSocket::new(client.clone())?);
         let sync = SyncEngine::with_parts(
             client.clone(),
@@ -1284,7 +1289,18 @@ pub async fn start_runtime(
         .encrypted_session
         .as_deref()
         .ok_or_else(|| anyhow!("account {} has no session", account.id))?;
-    let token = shared.cipher.decrypt(blob)?;
+    let opened = shared.cipher.decrypt(blob, &account.tzibbur_user_id)?;
+    if opened.rewrap {
+        let fresh = shared
+            .cipher
+            .encrypt(&opened.token, &account.tzibbur_user_id)?;
+        shared.store.set_account_session(account.id, &fresh).await?;
+        tracing::info!(
+            account = account.id,
+            "re-wrapped session under the current key"
+        );
+    }
+    let token = opened.token;
     let bridge_user = shared
         .store
         .user(account.user)
