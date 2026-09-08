@@ -190,6 +190,7 @@ async fn api_verify(
         &user,
         &app,
         session,
+        false,
     )
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -226,11 +227,11 @@ const $=id=>document.getElementById(id);let challenge=null,phone=null,name=null;
 async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j;}
 $('send').onclick=async()=>{$('err').textContent='';$('send').disabled=true;try{
  phone=$('phone').value;name=$('name').value||null;
- const j=await post('api/start',{init_data:tg?tg.initData:'',phone,display_name:name});challenge=j.challenge_id;phone=j.phone;
+ const base=location.pathname.replace(/\/app\/?$/,'');const j=await post(base+'/app/api/start',{init_data:tg?tg.initData:'',phone,display_name:name});challenge=j.challenge_id;phone=j.phone;
  $('step1').style.display='none';$('step2').style.display='block';$('code').focus();
 }catch(e){$('err').textContent=e.message}finally{$('send').disabled=false}};
 $('verify').onclick=async()=>{$('err').textContent='';$('verify').disabled=true;try{
- const j=await post('api/verify',{init_data:tg?tg.initData:'',challenge_id:challenge,phone,code:$('code').value,display_name:name});
+ const base=location.pathname.replace(/\/app\/?$/,'');const j=await post(base+'/app/api/verify',{init_data:tg?tg.initData:'',challenge_id:challenge,phone,code:$('code').value,display_name:name});
  $('err').className='ok';$('err').textContent='Connected as '+j.display_name+'. You can close this window.';if(tg)setTimeout(()=>tg.close(),1500);
 }catch(e){$('err').textContent=e.message}finally{$('verify').disabled=false}};
 </script></body></html>"##;

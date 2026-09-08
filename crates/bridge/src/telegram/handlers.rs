@@ -2,6 +2,7 @@ use super::{Command, Dialog, State, Storage};
 use crate::app::App;
 use crate::bridge::format::escape_html;
 use crate::bridge::{BridgeBot, MAX_OUTBOUND_CHARS};
+use crate::i18n::{t, Lang};
 use crate::phone::{parse_phone, parse_phone_list};
 use crate::store::{AccountSettings, AccountStatus, Conversation};
 use anyhow::{anyhow, Result};
@@ -241,20 +242,18 @@ async fn on_command_inner(
     match cmd {
         Command::Start => {
             app.bridge_user(&tg).await?;
+            let lang = app.lang_for(&tg).await;
             let account = app.account_for(tg.id.0 as i64).await?;
             let text = match account {
-                Some(a) if a.status == AccountStatus::Connected => format!(
-                    "Signed in as <b>{}</b>. Your groups are the topics in this chat. Reply in a topic to post there.\n\n/chats, /newgroup, /settings, /help",
-                    escape_html(a.display_name.as_deref().unwrap_or("friend"))
-                ),
+                Some(a) if a.status == AccountStatus::Connected => t(lang, "welcome_back", &[&escape_html(a.display_name.as_deref().unwrap_or("friend"))]),
                 Some(a) if a.status == AccountStatus::ReauthRequired => {
-                    "Your session expired. Send /reconnect to sign in again.".to_owned()
+                    t(lang, "session_expired", &[])
                 }
-                _ => "<b>Tzibbur for Telegram</b>\n\nRead and reply to your Tzibbur groups from Telegram. Each group becomes a topic in this chat.\n\nTap Connect to sign in with your phone number.".to_owned(),
+                _ => t(lang, "welcome", &[]),
             };
             let mut r = send_in(&bot, msg.chat.id, thread_for(&app, &msg).await, text);
             if app.account_for(tg.id.0 as i64).await?.is_none() {
-                r = r.reply_markup(kb(vec![vec![("Connect", "connect".into())]]));
+                r = r.reply_markup(kb(vec![vec![(&t(lang, "btn_connect", &[]), "connect".into())]]));
             }
             r.await?;
         }
@@ -388,6 +387,68 @@ async fn on_command_inner(
                 )
                 .await?;
             }
+        }
+        Command::Find(arg) => {
+            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            let lang = app.lang_for(&tg).await;
+            let needle = arg.trim();
+            if needle.is_empty() {
+                say(&bot, &msg, &app, t(lang, "find_usage", &[])).await?;
+                return Ok(());
+            }
+            let scanned = 300u32;
+            let hits = rt.find(&conv, needle, scanned).await?;
+            if hits.is_empty() {
+                say(&bot, &msg, &app, t(lang, "find_none", &[&scanned.to_string()])).await?;
+            } else {
+                let members = rt.local().members(&conv.group_id).unwrap_or_default();
+                let mut out = format!("<b>{}</b>\n", t(lang, "find_header", &[&scanned.to_string()]));
+                for m in hits.iter().rev().take(15) {
+                    let entity = tzibbur_api::store::MessageEntity::from_dto(m.clone(), &conv.group_id);
+                    let who = crate::bridge::format::sender_label(&entity, &members, Some(&rt.tzibbur_user_id), false);
+                    let body = crate::bridge::format::split_name_prefix(&m.body).map(|(_, b)| b).unwrap_or(&m.body);
+                    let snippet: String = body.chars().take(120).collect();
+                    let when = m.created_at.and_then(chrono::DateTime::from_timestamp_millis).map(|d| d.format("%b %-d %H:%M").to_string()).unwrap_or_default();
+                    out.push_str(&format!("<b>{}</b> <i>{}</i>\n{}\n\n", escape_html(&who), when, escape_html(&snippet)));
+                }
+                say(&bot, &msg, &app, out).await?;
+            }
+        }
+        Command::Accounts => {
+            let (text, kb) = accounts_view(&app, &tg).await?;
+            say_kb(&bot, &msg, &app, text, kb).await?;
+        }
+        Command::Language => {
+            let lang = app.lang_for(&tg).await;
+            say_kb(
+                &bot,
+                &msg,
+                &app,
+                t(lang, "choose_language", &[]),
+                kb(vec![vec![("English", "lang:en".into()), ("עברית", "lang:he".into()), ("ייִדיש", "lang:yi".into())]]),
+            )
+            .await?;
+        }
+        Command::Stats => {
+            if app.shared.cfg.admin_telegram_id != Some(tg.id.0 as i64) {
+                return Ok(());
+            }
+            let (users, accounts, convs, msgs) = app.shared.store.counts().await?;
+            let up = app.started_at.elapsed().as_secs();
+            let states: Vec<String> = app.accounts_for_all_running().into_iter().map(|(id, st)| format!("{id}:{st:?}")).collect();
+            say(
+                &bot,
+                &msg,
+                &app,
+                format!(
+                    "Uptime {}h {}m\nUsers {users}\nConnected accounts {accounts}\nRunning runtimes {}\nTopics {convs}\nMessage mappings {msgs}\nRuntimes: {}",
+                    up / 3600,
+                    (up % 3600) / 60,
+                    app.registry.len(),
+                    states.join(", ")
+                ),
+            )
+            .await?;
         }
         Command::Contacts(arg) => {
             let rt = connected_runtime(&app, &tg).await?;
@@ -632,6 +693,48 @@ pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> Strin
     s
 }
 
+/// `/accounts`: list connected Tzibbur accounts with a switch for the active one.
+async fn accounts_view(app: &App, tg: &TgUser) -> Result<(String, InlineKeyboardMarkup)> {
+    let lang = app.lang_for(tg).await;
+    let accounts = app.accounts_for(tg.id.0 as i64).await?;
+    let active = app.account_for(tg.id.0 as i64).await?.map(|a| a.id);
+    let mut text = format!("<b>{}</b>\n", t(lang, "accounts_header", &[]));
+    let mut rows: Vec<Vec<(String, String)>> = vec![];
+    for a in &accounts {
+        let mark = if Some(a.id) == active {
+            " (active)"
+        } else {
+            ""
+        };
+        text.push_str(&format!(
+            "• {}{} {}\n",
+            escape_html(a.display_name.as_deref().unwrap_or("?")),
+            mark,
+            escape_html(a.phone_e164.as_deref().unwrap_or(""))
+        ));
+        if Some(a.id) != active {
+            rows.push(vec![(
+                format!("Use {}", a.display_name.as_deref().unwrap_or("?")),
+                format!("acct:{}", a.id),
+            )]);
+        }
+    }
+    if accounts.is_empty() {
+        text.push_str(&t(lang, "not_connected", &[]));
+    }
+    rows.push(vec![(t(lang, "btn_add_account", &[]), "conn:add".into())]);
+    let kb = InlineKeyboardMarkup::new(
+        rows.into_iter()
+            .map(|r| {
+                r.into_iter()
+                    .map(|(a, b)| InlineKeyboardButton::callback(a, b))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>(),
+    );
+    Ok((text, kb))
+}
+
 /// Admin-only actions: say who the admins are instead of relaying Tzibbur's 403.
 async fn require_admin(rt: &crate::bridge::AccountRuntime, conv: &Conversation) -> Result<()> {
     rt.sync_refresh_members(&conv.group_id).await.ok();
@@ -716,22 +819,32 @@ async fn resolve_conversation(app: &App, msg: &Message) -> Result<Option<Convers
 async fn begin_connect(bot: &BridgeBot, msg: &Message, app: &App, dialogue: &Dialog) -> Result<()> {
     let tg = from(msg)?;
     app.bridge_user(tg).await?;
+    let lang = app.lang_for(tg).await;
     if let Some(a) = app.account_for(tg.id.0 as i64).await? {
         if a.status == AccountStatus::Connected && app.registry.get(a.id).is_some() {
-            say(
+            say_kb(
                 bot,
                 msg,
                 app,
-                "Already connected. Send /disconnect first to switch accounts.",
+                t(
+                    lang,
+                    "connect_choice",
+                    &[&escape_html(a.display_name.as_deref().unwrap_or("?"))],
+                ),
+                kb(vec![
+                    vec![(&t(lang, "btn_add_account", &[]), "conn:add".into())],
+                    vec![(&t(lang, "btn_replace_account", &[]), "conn:replace".into())],
+                    vec![(&t(lang, "btn_cancel", &[]), "noop".into())],
+                ]),
             )
             .await?;
             return Ok(());
         }
     }
     app.touch_dialogue(msg.chat.id.0);
-    dialogue.update(State::AwaitPhone).await?;
+    dialogue.update(State::AwaitPhone { add: false }).await?;
     let thread = thread_for(app, msg).await;
-    send_phone_prompt(bot, msg.chat.id, thread, app).await
+    send_phone_prompt(bot, msg.chat.id, thread, app, lang).await
 }
 
 /// Ask for the phone with a one-tap "share my number" button.
@@ -740,14 +853,9 @@ pub async fn send_phone_prompt(
     chat: ChatId,
     thread: Option<ThreadId>,
     _app: &App,
+    lang: Lang,
 ) -> Result<()> {
-    send_in(
-        bot,
-        chat,
-        thread,
-        "Send your phone number, for example +1 555 010 0123.",
-    )
-    .await?;
+    send_in(bot, chat, thread, t(lang, "ask_phone", &[])).await?;
     Ok(())
 }
 
@@ -756,6 +864,7 @@ async fn on_phone_inner(
     msg: Message,
     dialogue: Dialog,
     app: Arc<App>,
+    add: bool,
 ) -> Result<()> {
     if !app.touch_dialogue(msg.chat.id.0) {
         dialogue.exit().await?;
@@ -789,7 +898,7 @@ async fn on_phone_inner(
                 &bot,
                 &msg,
                 &app,
-                "That is not a phone number. Send it like +1 555 010 0123, or /cancel.".to_owned(),
+                t(app.lang_for(from(&msg)?).await, "bad_phone", &[]),
             )
             .await?;
             return Ok(());
@@ -798,15 +907,22 @@ async fn on_phone_inner(
     dialogue
         .update(State::AwaitName {
             phone: phone.clone(),
+            add,
         })
         .await?;
     let thread = thread_for(&app, &msg).await;
-    send_in(&bot, msg.chat.id, thread, format!(
-            "Number: <b>{}</b>.\n\nWhat name should other members see? Send a name, or skip if you already have a Tzibbur account.",
-            escape_html(&phone)
-        ))
-        .reply_markup(KeyboardRemove::new())
-        .await?;
+    send_in(
+        &bot,
+        msg.chat.id,
+        thread,
+        t(
+            app.lang_for(from(&msg)?).await,
+            "ask_name",
+            &[&escape_html(&phone)],
+        ),
+    )
+    .reply_markup(KeyboardRemove::new())
+    .await?;
     Ok(())
 }
 
@@ -815,7 +931,7 @@ async fn on_name_inner(
     msg: Message,
     dialogue: Dialog,
     app: Arc<App>,
-    phone: String,
+    (phone, add): (String, bool),
 ) -> Result<()> {
     if !app.touch_dialogue(msg.chat.id.0) {
         dialogue.exit().await?;
@@ -867,6 +983,7 @@ async fn on_name_inner(
                     phone,
                     display_name,
                     failures: 0,
+                    add,
                 })
                 .await?;
             say(
@@ -874,7 +991,8 @@ async fn on_name_inner(
                 &msg,
                 &app,
                 format!(
-                    "Code sent by SMS. Send the 6 digits here.{}",
+                    "{}{}",
+                    t(app.lang_for(from(&msg)?).await, "code_sent", &[]),
                     ch.resend_after_seconds
                         .map(|s| format!(" A new code can be requested after {s} seconds."))
                         .unwrap_or_default()
@@ -903,7 +1021,7 @@ async fn on_code_inner(
     msg: Message,
     dialogue: Dialog,
     app: Arc<App>,
-    (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
+    (challenge_id, phone, display_name, failures, add): (String, String, Option<String>, u32, bool),
 ) -> Result<()> {
     if !app.touch_dialogue(msg.chat.id.0) {
         dialogue.exit().await?;
@@ -941,7 +1059,7 @@ async fn on_code_inner(
     match client.verify_auth(&req).await {
         Ok(session) => {
             dialogue.exit().await?;
-            finish_connect(&bot, msg.chat.id, &tg, &app, session).await
+            finish_connect(&bot, msg.chat.id, &tg, &app, session, add).await
         }
         Err(AppError::InvalidCode { .. }) => {
             let failures = failures + 1;
@@ -961,9 +1079,16 @@ async fn on_code_inner(
                         phone,
                         display_name,
                         failures,
+                        add,
                     })
                     .await?;
-                say(&bot, &msg, &app, "Wrong code. Try again, or /cancel.").await
+                say(
+                    &bot,
+                    &msg,
+                    &app,
+                    t(app.lang_for(&tg).await, "wrong_code", &[]),
+                )
+                .await
             }
         }
         Err(e) => {
@@ -989,20 +1114,13 @@ pub async fn finish_connect(
     tg: &TgUser,
     app: &App,
     session: Session,
+    add: bool,
 ) -> Result<()> {
     let name = session.user.display_name.clone();
-    match app.connect(tg, session).await {
+    let lang = app.lang_for(tg).await;
+    match app.connect(tg, session, add).await {
         Ok((_account, rt)) => {
-            say_home(
-                app,
-                tg,
-                format!(
-                    "Connected as <b>{}</b>. Your groups are being added as topics.",
-                    escape_html(&name)
-                ),
-                None,
-            )
-            .await?;
+            say_home(app, tg, t(lang, "connected", &[&escape_html(&name)]), None).await?;
             // Kick an initial sync so topics appear quickly even before the socket settles.
             let rt2 = rt.clone();
             tokio::spawn(async move {
@@ -1195,6 +1313,38 @@ async fn on_message_inner(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result
         Ok(_) => return Ok(()),
         Err(e) => return say(&bot, &msg, &app, escape_html(&e.to_string())).await,
     };
+    // A shared contact inside a group topic adds that person to the group.
+    if let Some(c) = msg.contact() {
+        let lang = app.lang_for(&tg).await;
+        match parse_phone(&c.phone_number, &app.shared.cfg.default_region) {
+            Ok(phone) => {
+                let (out, failed) = add_members_carefully(
+                    &rt,
+                    &conv.group_id,
+                    &[phone],
+                    &app.shared.cfg.default_region,
+                )
+                .await;
+                let who = format!(
+                    "{} {}",
+                    c.first_name,
+                    c.last_name.clone().unwrap_or_default()
+                )
+                .trim()
+                .to_owned();
+                let mut text = if out.added.is_empty() {
+                    String::new()
+                } else {
+                    t(lang, "contact_added", &[&escape_html(&who)]) + "\n"
+                };
+                text.push_str(&format_add_outcome(&out));
+                text.push_str(&format_add_failures(&failed));
+                rt.sync_refresh_members(&conv.group_id).await.ok();
+                return say(&bot, &msg, &app, text).await;
+            }
+            Err(_) => return say(&bot, &msg, &app, t(lang, "bad_phone", &[])).await,
+        }
+    }
     let Some(text) = msg.text().map(str::to_owned) else {
         return say(
             &bot,
@@ -1213,17 +1363,46 @@ async fn on_message_inner(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result
         Some(r) if r.text().is_some() => quote_prefix(r, &rt.tzibbur_user_id) + &text,
         _ => text,
     };
-    // Tzibbur caps a message at MAX_OUTBOUND_CHARS: split long texts on whitespace.
-    let parts = split_for_tzibbur(&text, MAX_OUTBOUND_CHARS);
-    if parts.len() > 1 {
-        say(
-            &bot,
-            &msg,
-            &app,
-            format!("ℹ️ Long message — sending it as {} parts.", parts.len()),
-        )
-        .await?;
+    // Over the Tzibbur limit: ask before splitting. The text waits in memory only.
+    let n = text.chars().count();
+    if n > MAX_OUTBOUND_CHARS {
+        let parts = split_for_tzibbur(&text, MAX_OUTBOUND_CHARS).len();
+        let lang = app.lang_for(&tg).await;
+        app.pending_splits
+            .retain(|_, (_, _, when)| when.elapsed() < std::time::Duration::from_secs(600));
+        app.pending_splits.insert(
+            (msg.chat.id.0, msg.id.0),
+            (conv.id, text.clone(), std::time::Instant::now()),
+        );
+        let mut r = bot
+            .send_message(
+                msg.chat.id,
+                t(
+                    lang,
+                    "too_long_ask",
+                    &[
+                        &n.to_string(),
+                        &MAX_OUTBOUND_CHARS.to_string(),
+                        &parts.to_string(),
+                    ],
+                ),
+            )
+            .parse_mode(HTML)
+            .reply_parameters(ReplyParameters::new(msg.id))
+            .reply_markup(kb(vec![vec![
+                (
+                    &t(lang, "btn_send_parts", &[&parts.to_string()]),
+                    format!("split:{}", msg.id.0),
+                ),
+                (&t(lang, "btn_cancel", &[]), "noop".into()),
+            ]]));
+        if let Some(th) = conv.topic_id() {
+            r = r.message_thread_id(ThreadId(MessageId(th)));
+        }
+        r.await?;
+        return Ok(());
     }
+    let parts = vec![text];
     for part in parts {
         if let Err(e) = rt.send_text(&conv, &part, msg.id.0).await {
             let e = anyhow::anyhow!(e);
@@ -1341,10 +1520,76 @@ pub async fn on_callback(
                 bot.delete_message(chat_id, m.id).await.ok();
             }
         }
-        "connect" | "reconnect" => {
+        "connect" | "reconnect" | "conn:add" | "conn:replace" => {
+            let add = data == "conn:add";
             app.touch_dialogue(chat_id.0);
-            dialogue.update(State::AwaitPhone).await?;
-            send_phone_prompt(&bot, chat_id, thread, &app).await?;
+            dialogue.update(State::AwaitPhone { add }).await?;
+            let lang = app.lang_for(&tg).await;
+            send_phone_prompt(&bot, chat_id, thread, &app, lang).await?;
+        }
+        d if d.starts_with("lang:") => {
+            let code = &d[5..];
+            let user = app.bridge_user(&tg).await?;
+            app.shared
+                .store
+                .set_user_setting(user.id, "lang", serde_json::json!(code))
+                .await?;
+            let lang = Lang::from_code(Some(code));
+            for a in app.accounts_for(tg.id.0 as i64).await? {
+                if let Some(rt) = app.registry.get(a.id) {
+                    rt.set_lang(lang);
+                }
+            }
+            if let Some(m) = q.regular_message() {
+                bot.edit_message_text(chat_id, m.id, t(lang, "language_set", &[lang.name()]))
+                    .parse_mode(HTML)
+                    .await
+                    .ok();
+            }
+        }
+        d if d.starts_with("acct:") => {
+            let id: i64 = d[5..].parse().unwrap_or(0);
+            let user = app.bridge_user(&tg).await?;
+            let accounts = app.accounts_for(tg.id.0 as i64).await?;
+            if let Some(a) = accounts.iter().find(|a| a.id == id) {
+                app.shared
+                    .store
+                    .set_user_setting(user.id, "active_account", serde_json::json!(id))
+                    .await?;
+                let lang = app.lang_for(&tg).await;
+                ack = t(
+                    lang,
+                    "active_set",
+                    &[a.display_name.as_deref().unwrap_or("?")],
+                )
+                .replace("<b>", "")
+                .replace("</b>", "");
+                if let Some(m) = q.regular_message() {
+                    let (text, kb) = accounts_view(&app, &tg).await?;
+                    bot.edit_message_text(chat_id, m.id, text)
+                        .parse_mode(HTML)
+                        .reply_markup(kb)
+                        .await
+                        .ok();
+                }
+            }
+        }
+        d if d.starts_with("split:") => {
+            let mid: i32 = d[6..].parse().unwrap_or(0);
+            if let Some((_, (conv_id, text, _))) = app.pending_splits.remove(&(chat_id.0, mid)) {
+                if let Some(conv) = app.shared.store.conversation(conv_id).await? {
+                    let rt = app.runtime(conv.account)?;
+                    for part in split_for_tzibbur(&text, MAX_OUTBOUND_CHARS) {
+                        rt.send_text(&conv, &part, mid)
+                            .await
+                            .map_err(|e| anyhow::anyhow!(e))?;
+                    }
+                    ack = "Sent".into();
+                }
+            }
+            if let Some(m) = q.regular_message() {
+                bot.delete_message(chat_id, m.id).await.ok();
+            }
         }
         "disc:keep" | "disc:purge" => {
             if let Some(a) = app.account_for(tg.id.0 as i64).await? {
@@ -1516,9 +1761,15 @@ pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<(
 }
 
 /// Same as `on_phone_inner`, but failures are shown to the user instead of only logged.
-pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<App>) -> Result<()> {
+pub async fn on_phone(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+    add: bool,
+) -> Result<()> {
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
-    if let Err(e) = on_phone_inner(bot, msg, dialogue, app).await {
+    if let Err(e) = on_phone_inner(bot, msg, dialogue, app, add).await {
         tracing::warn!(error = %e, "handler on_phone failed");
         say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
             .await
@@ -1533,10 +1784,10 @@ pub async fn on_name(
     msg: Message,
     dialogue: Dialog,
     app: Arc<App>,
-    phone: String,
+    (phone, add): (String, bool),
 ) -> Result<()> {
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
-    if let Err(e) = on_name_inner(bot, msg, dialogue, app, phone).await {
+    if let Err(e) = on_name_inner(bot, msg, dialogue, app, (phone, add)).await {
         tracing::warn!(error = %e, "handler on_name failed");
         say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
             .await
@@ -1551,7 +1802,7 @@ pub async fn on_code(
     msg: Message,
     dialogue: Dialog,
     app: Arc<App>,
-    (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
+    (challenge_id, phone, display_name, failures, add): (String, String, Option<String>, u32, bool),
 ) -> Result<()> {
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_code_inner(
@@ -1559,7 +1810,7 @@ pub async fn on_code(
         msg,
         dialogue,
         app,
-        (challenge_id, phone, display_name, failures),
+        (challenge_id, phone, display_name, failures, add),
     )
     .await
     {

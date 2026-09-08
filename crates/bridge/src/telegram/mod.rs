@@ -37,6 +37,14 @@ pub enum Command {
     Manage,
     #[command(description = "Delete this group (admins)")]
     DeleteGroup,
+    #[command(description = "Search this group's recent messages")]
+    Find(String),
+    #[command(description = "Your connected Tzibbur accounts")]
+    Accounts,
+    #[command(description = "Language")]
+    Language,
+    #[command(description = "Operator statistics")]
+    Stats,
     #[command(description = "Check which phone numbers are on Tzibbur")]
     Contacts(String),
     #[command(description = "List your Tzibbur devices")]
@@ -74,16 +82,17 @@ pub enum Command {
 pub enum State {
     #[default]
     Idle,
-    /// /connect: waiting for the phone number.
-    AwaitPhone,
+    /// /connect: waiting for the phone number. `add` keeps existing accounts.
+    AwaitPhone { add: bool },
     /// Waiting for the display name (or "skip").
-    AwaitName { phone: String },
+    AwaitName { phone: String, add: bool },
     /// Waiting for the 6-digit SMS code.
     AwaitCode {
         challenge_id: String,
         phone: String,
         display_name: Option<String>,
         failures: u32,
+        add: bool,
     },
     /// /newgroup: waiting for the name.
     AwaitGroupName,
@@ -115,14 +124,15 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
             dptree::filter(|m: Message| m.successful_payment().is_some())
                 .endpoint(handlers::on_successful_payment),
         )
-        .branch(case![State::AwaitPhone].endpoint(handlers::on_phone))
-        .branch(case![State::AwaitName { phone }].endpoint(handlers::on_name))
+        .branch(case![State::AwaitPhone { add }].endpoint(handlers::on_phone))
+        .branch(case![State::AwaitName { phone, add }].endpoint(handlers::on_name))
         .branch(
             case![State::AwaitCode {
                 challenge_id,
                 phone,
                 display_name,
-                failures
+                failures,
+                add
             }]
             .endpoint(handlers::on_code),
         )
@@ -147,6 +157,41 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
 pub async fn setup_bot_profile(bot: &BridgeBot, app: &App) -> Result<()> {
     let cmds: Vec<BotCommand> = Command::bot_commands();
     bot.set_my_commands(cmds).await?;
+    for (lang, list) in [
+        (
+            "he",
+            [
+                ("start", "התחלה"),
+                ("connect", "התחברות לחשבון ציבור"),
+                ("chats", "הקבוצות שלי"),
+                ("newgroup", "יצירת קבוצה"),
+                ("group", "ניהול הקבוצה של הנושא"),
+                ("find", "חיפוש בהודעות האחרונות"),
+                ("language", "שפה"),
+                ("help", "רשימת פקודות"),
+            ],
+        ),
+        (
+            "yi",
+            [
+                ("start", "אָנהייב"),
+                ("connect", "פאַרבינדן אַ ציבור־קאָנטע"),
+                ("chats", "מײַנע גרופעס"),
+                ("newgroup", "שאַפן אַ גרופע"),
+                ("group", "פאַרוואַלטן די גרופע פון דער טעמע"),
+                ("find", "זוכן אין לעצטע מעלדונגען"),
+                ("language", "שפּראַך"),
+                ("help", "באַפעלן"),
+            ],
+        ),
+    ] {
+        let localized: Vec<BotCommand> =
+            list.iter().map(|(c, d)| BotCommand::new(*c, *d)).collect();
+        bot.set_my_commands(localized)
+            .language_code(lang)
+            .await
+            .ok();
+    }
     bot.set_my_short_description()
         .short_description("A Telegram client for Tzibbur. Your groups as topics.")
         .await

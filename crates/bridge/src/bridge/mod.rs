@@ -38,12 +38,34 @@ pub const MAX_OUTBOUND_CHARS: usize = 1000;
 
 /// Shared services every runtime needs.
 pub struct Shared {
+    /// Last alert per scope (rate limit for operator alerts).
+    pub last_alert: DashMap<String, std::time::Instant>,
     pub cfg: Config,
     pub store: Store,
     pub cipher: SessionCipher,
     pub bot: BridgeBot,
     /// `getMe.has_topics_enabled` — topic mode must be enabled for the bot in @BotFather.
     pub bot_topics_enabled: AtomicBool,
+}
+
+impl Shared {
+    /// Rate-limited alert to the operator (metadata only, never message text).
+    pub async fn alert(&self, scope: &str, text: &str) {
+        let Some(admin) = self.cfg.admin_telegram_id else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last_alert.get(scope) {
+            if now.duration_since(*last) < std::time::Duration::from_secs(30 * 60) {
+                return;
+            }
+        }
+        self.last_alert.insert(scope.to_owned(), now);
+        let _ = self
+            .bot
+            .send_message(ChatId(admin), format!("Alert [{scope}]: {text}"))
+            .await;
+    }
 }
 
 /// All running account runtimes, keyed by bridge account id.
@@ -66,6 +88,9 @@ impl Registry {
     }
     pub fn len(&self) -> usize {
         self.runtimes.len()
+    }
+    pub fn snapshot(&self) -> Vec<Arc<AccountRuntime>> {
+        self.runtimes.iter().map(|r| r.value().clone()).collect()
     }
     pub async fn stop_all(&self) {
         let ids: Vec<i64> = self.runtimes.iter().map(|r| *r.key()).collect();
@@ -101,6 +126,8 @@ pub struct AccountRuntime {
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Set once we told the user that topics are unavailable, to avoid nagging.
     topics_warning_sent: AtomicBool,
+    /// Language for notes posted into this user's topics.
+    lang: RwLock<crate::i18n::Lang>,
     /// One lock per conversation: forwarding and topic (re)creation for a group never run
     /// concurrently, so two events on a stale mapping cannot mint two topics.
     conv_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
@@ -151,6 +178,7 @@ impl AccountRuntime {
             task: parking_lot::Mutex::new(None),
             topics_warning_sent: AtomicBool::new(false),
             conv_locks: DashMap::new(),
+            lang: RwLock::new(crate::i18n::Lang::En),
             db_path,
         }))
     }
@@ -169,6 +197,15 @@ impl AccountRuntime {
     }
     pub fn set_settings(&self, s: AccountSettings) {
         *self.settings.write() = s;
+    }
+    pub fn lang(&self) -> crate::i18n::Lang {
+        *self.lang.read()
+    }
+    pub fn set_lang(&self, l: crate::i18n::Lang) {
+        *self.lang.write() = l;
+    }
+    fn tr(&self, key: &str, args: &[&str]) -> String {
+        crate::i18n::t(self.lang(), key, args)
     }
 
     /// Start the sync engine and the event loop.
@@ -229,6 +266,7 @@ impl AccountRuntime {
                     Ok(ev) => {
                         if let Err(e) = self.handle_sync_event(ev).await {
                             tracing::warn!(account = self.account_id, error = %e, "sync event handling failed");
+                            self.shared.alert("sync", &format!("account {}: {}", self.account_id, code_only(&e))).await;
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -280,7 +318,7 @@ impl AccountRuntime {
                 ) {
                     if conv.name.as_deref() != Some(g.name.as_str()) {
                         self.rename_topic(&conv, &g.name).await?;
-                        self.send_note(&conv, &format!("Group renamed to “{}”", g.name))
+                        self.send_note(&conv, &self.tr("renamed", &[&g.name]))
                             .await
                             .ok();
                     }
@@ -294,12 +332,9 @@ impl AccountRuntime {
                     .await?
                 {
                     if !conv.closed {
-                        self.send_note(
-                            &conv,
-                            "This group is gone or you were removed. Topic closed.",
-                        )
-                        .await
-                        .ok();
+                        self.send_note(&conv, &self.tr("group_gone", &[]))
+                            .await
+                            .ok();
                         if let Some(t) = conv.topic_id() {
                             let _ = self
                                 .shared
@@ -340,7 +375,9 @@ impl AccountRuntime {
                     } else {
                         member.display_name.clone()
                     };
-                    self.send_note(&conv, &format!("{who} joined")).await.ok();
+                    self.send_note(&conv, &self.tr("joined", &[&who]))
+                        .await
+                        .ok();
                 }
                 self.retry_too_small(&group_id).await;
             }
@@ -359,7 +396,7 @@ impl AccountRuntime {
                     .await?
                 {
                     let who = display_name.unwrap_or_else(|| "A member".into());
-                    self.send_note(&conv, &format!("{who} left")).await.ok();
+                    self.send_note(&conv, &self.tr("left", &[&who])).await.ok();
                 }
             }
             SyncEvent::RoleChanged {
@@ -530,7 +567,7 @@ impl AccountRuntime {
             self.warn_topics_unavailable().await;
         }
         if !history.is_empty() {
-            self.send_note(&conv, "Recent messages:").await.ok();
+            self.send_note(&conv, &self.tr("recent", &[])).await.ok();
             self.forward_to(&conv, history).await?;
         }
         Ok(conv)
@@ -674,11 +711,20 @@ impl AccountRuntime {
     /// Send HTML text into a conversation's topic, recreating the topic if it was deleted.
     async fn send_to_conv(&self, conv: &Conversation, html: &str) -> Result<Message> {
         let chat = ChatId(self.telegram_chat_id);
+        // Muted groups are delivered without a notification.
+        let silent = self
+            .local
+            .get_group(&conv.group_id)
+            .ok()
+            .flatten()
+            .map(|g| g.muted)
+            .unwrap_or(false);
         let mut req = self
             .shared
             .bot
             .send_message(chat, html)
-            .parse_mode(ParseMode::Html);
+            .parse_mode(ParseMode::Html)
+            .disable_notification(silent);
         if let Some(t) = conv.topic_id() {
             req = req.message_thread_id(ThreadId(MessageId(t)));
         }
@@ -825,6 +871,48 @@ impl AccountRuntime {
             .store
             .set_conversation_closed(conv.id, true)
             .await
+    }
+
+    /// Search the last `limit` messages of a group for `needle` (case-insensitive), live from
+    /// Tzibbur; nothing is stored.
+    pub async fn find(
+        &self,
+        conv: &Conversation,
+        needle: &str,
+        limit: u32,
+    ) -> Result<Vec<tzibbur_api::models::MessageDto>> {
+        let mut out = Vec::new();
+        let mut before: Option<i64> = None;
+        let mut fetched = 0u32;
+        let needle = needle.to_lowercase();
+        while fetched < limit {
+            let q = tzibbur_api::models::MessagesQuery {
+                after_seq: None,
+                before_seq: before,
+                limit: Some(100.min(limit - fetched)),
+            };
+            let page = self
+                .client
+                .get_messages_page(&conv.group_id, &q)
+                .await
+                .map_err(anyhow::Error::new)?;
+            if page.items.is_empty() {
+                break;
+            }
+            fetched += page.items.len() as u32;
+            let min_seq = page.items.iter().map(|m| m.seq).min();
+            out.extend(
+                page.items
+                    .into_iter()
+                    .filter(|m| m.body.to_lowercase().contains(&needle)),
+            );
+            match page.next_before_seq.or(min_seq) {
+                Some(b) if Some(b) != before => before = Some(b),
+                _ => break,
+            }
+        }
+        out.sort_by_key(|m| m.seq);
+        Ok(out)
     }
 
     /// Live group details (falls back to the local cache).
@@ -1080,7 +1168,7 @@ impl AccountRuntime {
                             .bot
                             .send_message(
                                 ChatId(self.telegram_chat_id),
-                                format!("Not sent: {reason}."),
+                                self.tr("not_sent", &[&reason]),
                             )
                             .reply_parameters(teloxide::types::ReplyParameters::new(MessageId(tg)));
                         if let Some(t) = conv.topic_id() {
@@ -1094,6 +1182,17 @@ impl AccountRuntime {
         }
         Ok(())
     }
+}
+
+/// First clause of an error, capped: never carries message text.
+fn code_only(e: &anyhow::Error) -> String {
+    e.to_string()
+        .split(['\n', ':'])
+        .next()
+        .unwrap_or("error")
+        .chars()
+        .take(80)
+        .collect()
 }
 
 fn is_missing_thread(e: &teloxide::RequestError) -> bool {
@@ -1196,6 +1295,7 @@ pub async fn start_runtime(
         .parse()
         .context("telegram_user_id")?;
     let rt = AccountRuntime::build(shared.clone(), account, token, chat_id)?;
+    rt.set_lang(crate::i18n::Lang::from_code(bridge_user.lang().as_deref()));
     rt.start();
     registry.insert(rt.clone());
     Ok(rt)

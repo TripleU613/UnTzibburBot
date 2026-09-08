@@ -74,6 +74,22 @@ pub struct BridgeUser {
 }
 
 impl BridgeUser {
+    fn setting_str(&self, key: &str) -> Option<String> {
+        self.settings
+            .as_ref()?
+            .get(key)?
+            .as_str()
+            .map(str::to_owned)
+    }
+    /// Preferred language code, if the user chose one.
+    pub fn lang(&self) -> Option<String> {
+        self.setting_str("lang")
+    }
+    /// Account used by main-thread commands when the user has several.
+    pub fn active_account(&self) -> Option<i64> {
+        self.settings.as_ref()?.get("active_account")?.as_i64()
+    }
+
     /// Thread id of the user's "Tzibbur" control topic, if created.
     pub fn home_topic_id(&self) -> Option<i32> {
         self.settings
@@ -271,6 +287,42 @@ impl Store {
             .into_iter()
             .filter(|u| u.home_topic_id().is_some())
             .collect())
+    }
+
+    /// Merge one key into the user's settings JSON.
+    pub async fn set_user_setting(&self, user_id: i64, key: &str, value: Value) -> Result<()> {
+        let current: Option<BridgeUser> = self.d.get(&self.n.users, user_id).await?;
+        let mut settings = current
+            .and_then(|u| u.settings)
+            .unwrap_or_else(|| json!({}));
+        if !settings.is_object() {
+            settings = json!({});
+        }
+        settings[key] = value;
+        let _: Value = self
+            .d
+            .update(
+                &self.n.users,
+                user_id,
+                &json!({"settings": settings, "updated_at": now()}),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// All connected accounts of a user, oldest first.
+    pub async fn accounts_for_user(&self, user_id: i64) -> Result<Vec<Account>> {
+        let mut list: Vec<Account> = self
+            .d
+            .list(
+                &self.n.accounts,
+                &[Filter::eq("user", user_id)],
+                None,
+                Some("id"),
+            )
+            .await?;
+        list.retain(|a| a.status == AccountStatus::Connected);
+        Ok(list)
     }
 
     pub async fn set_home_topic(&self, user_id: i64, topic_id: Option<i32>) -> Result<()> {
@@ -564,6 +616,28 @@ impl Store {
             )
             .await?;
         Ok(())
+    }
+
+    /// Row counts for the operator's /stats (no content).
+    pub async fn counts(&self) -> Result<(usize, usize, usize, usize)> {
+        #[derive(Deserialize)]
+        struct Id {
+            #[allow(dead_code)]
+            id: Value,
+        }
+        let u: Vec<Id> = self.d.list(&self.n.users, &[], None, None).await?;
+        let a: Vec<Id> = self
+            .d
+            .list(
+                &self.n.accounts,
+                &[Filter::eq("status", "connected")],
+                None,
+                None,
+            )
+            .await?;
+        let c: Vec<Id> = self.d.list(&self.n.conversations, &[], None, None).await?;
+        let m: Vec<Id> = self.d.list(&self.n.messages, &[], None, None).await?;
+        Ok((u.len(), a.len(), c.len(), m.len()))
     }
 
     // ---- messages ----

@@ -29,6 +29,11 @@ pub struct Config {
     pub collection_prefix: String,
     /// Country assumed for phone numbers typed without a country code (`BRIDGE_DEFAULT_REGION`), default `US`.
     pub default_region: String,
+    /// Receive Telegram updates by webhook instead of long polling (`BRIDGE_USE_WEBHOOK=true`).
+    /// Requires `BRIDGE_PUBLIC_URL`. Off by default: the Mini App can be served without it.
+    pub use_webhook: bool,
+    /// Telegram user id of the operator (`BRIDGE_ADMIN_TELEGRAM_ID`): receives `/stats` and error alerts.
+    pub admin_telegram_id: Option<i64>,
     /// How the bridge presents itself to Tzibbur (`TZIBBUR_PLATFORM`, `TZIBBUR_DEVICE_MODEL`,
     /// `TZIBBUR_APP_VERSION`, `TZIBBUR_OS_VERSION`); defaults to the Android app on a Pixel 7.
     pub device: tzibbur_api::DeviceInfo,
@@ -92,6 +97,10 @@ impl Config {
                 .unwrap_or(20),
             collection_prefix: env("BRIDGE_COLLECTION_PREFIX").unwrap_or_else(|| "bridge_".into()),
             default_region: env("BRIDGE_DEFAULT_REGION").unwrap_or_else(|| "US".into()),
+            use_webhook: env("BRIDGE_USE_WEBHOOK")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
+            admin_telegram_id: env("BRIDGE_ADMIN_TELEGRAM_ID").and_then(|v| v.parse().ok()),
             device: {
                 let d = tzibbur_api::DeviceInfo::android();
                 tzibbur_api::DeviceInfo {

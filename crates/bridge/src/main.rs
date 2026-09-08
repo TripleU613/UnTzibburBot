@@ -10,6 +10,7 @@ mod bridge;
 mod config;
 mod crypto;
 mod directus;
+mod i18n;
 mod miniapp;
 mod phone;
 mod store;
@@ -66,6 +67,7 @@ async fn main() -> Result<()> {
     }
 
     let shared = Arc::new(Shared {
+        last_alert: Default::default(),
         cfg: cfg.clone(),
         store,
         cipher: crypto::SessionCipher::new(cfg.master_key),
@@ -77,6 +79,8 @@ async fn main() -> Result<()> {
         registry: Registry::default(),
         bot_username: me.username().to_owned(),
         dialogue_activity: Default::default(),
+        pending_splits: Default::default(),
+        started_at: std::time::Instant::now(),
     });
 
     telegram::setup_bot_profile(&bot, &app)
@@ -87,7 +91,17 @@ async fn main() -> Result<()> {
     tracing::info!(accounts = started, "runtimes started");
 
     // HTTP: health (+ Mini App) and, in webhook mode, Telegram updates.
-    let router = miniapp::router(app.clone());
+    let prefix = cfg
+        .public_url
+        .as_ref()
+        .map(|u| u.path().trim_end_matches('/').to_owned())
+        .filter(|p| !p.is_empty() && p != "/");
+    let router = match &prefix {
+        Some(pfx) => axum::Router::new()
+            .nest(pfx, miniapp::router(app.clone()))
+            .merge(miniapp::router(app.clone())),
+        None => miniapp::router(app.clone()),
+    };
     let mut dispatcher = Dispatcher::builder(bot.clone(), telegram::schema())
         .dependencies(telegram::deps(app.clone()))
         .default_handler(|_| async {})
@@ -95,7 +109,7 @@ async fn main() -> Result<()> {
         .enable_ctrlc_handler()
         .build();
 
-    match &cfg.public_url {
+    match cfg.public_url.as_ref().filter(|_| cfg.use_webhook) {
         Some(public) => {
             let mut hook = public.clone();
             hook.set_path(&format!(

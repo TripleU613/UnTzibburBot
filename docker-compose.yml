@@ -83,8 +83,9 @@ services:
         condition: service_healthy
     # No published port by default: the bot long-polls Telegram. Set BRIDGE_PUBLIC_URL and put a
     # reverse proxy in front of the container's :8080 to enable webhook mode + the Mini App.
-    expose:
-      - "8080"
+    ports:
+      # Loopback only. Put Tailscale Funnel or a reverse proxy in front for the Mini App.
+      - "${BRIDGE_BIND:-127.0.0.1}:${BRIDGE_PORT:-8081}:8080"
     environment:
       TELOXIDE_TOKEN: ${TELOXIDE_TOKEN:?set TELOXIDE_TOKEN in .env}
       DIRECTUS_URL: http://directus:8055
@@ -92,6 +93,8 @@ services:
       BRIDGE_MASTER_KEY: ${BRIDGE_MASTER_KEY:?set BRIDGE_MASTER_KEY in .env (openssl rand -base64 32)}
       # Optional: public HTTPS URL of this service → webhook mode + Mini App login button.
       BRIDGE_PUBLIC_URL: ${BRIDGE_PUBLIC_URL:-}
+      BRIDGE_USE_WEBHOOK: ${BRIDGE_USE_WEBHOOK:-false}
+      BRIDGE_ADMIN_TELEGRAM_ID: ${BRIDGE_ADMIN_TELEGRAM_ID:-}
       BRIDGE_HISTORY_IMPORT: ${BRIDGE_HISTORY_IMPORT:-20}
       TZIBBUR_BASE_URL: ${TZIBBUR_BASE_URL:-https://api.tzibbur.me}
       BRIDGE_DEFAULT_REGION: ${BRIDGE_DEFAULT_REGION:-US}

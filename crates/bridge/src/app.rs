@@ -13,6 +13,9 @@ pub struct App {
     pub bot_username: String,
     /// Last activity per chat in a multi-step flow; flows go stale after 10 minutes.
     pub dialogue_activity: dashmap::DashMap<i64, std::time::Instant>,
+    /// Over-limit messages waiting for the user to confirm splitting: (chat, message id) -> (conv id, text, when).
+    pub pending_splits: dashmap::DashMap<(i64, i32), (i64, String, std::time::Instant)>,
+    pub started_at: std::time::Instant,
 }
 
 /// A multi-step flow (sign-in, new group, rename) is abandoned after this long.
@@ -48,11 +51,43 @@ impl App {
             .await
     }
 
+    /// The account main-thread commands act on: the user's chosen active account if it is
+    /// connected, else the single/most relevant one.
     pub async fn account_for(&self, tg_user_id: i64) -> Result<Option<Account>> {
         let Some(u) = self.shared.store.user_by_telegram_id(tg_user_id).await? else {
             return Ok(None);
         };
+        let connected = self.shared.store.accounts_for_user(u.id).await?;
+        if let Some(active) = u.active_account() {
+            if let Some(a) = connected.iter().find(|a| a.id == active) {
+                return Ok(Some(a.clone()));
+            }
+        }
+        if let Some(a) = connected.into_iter().next() {
+            return Ok(Some(a));
+        }
         self.shared.store.account_for_user(u.id).await
+    }
+
+    /// All connected accounts of a Telegram user.
+    pub async fn accounts_for(&self, tg_user_id: i64) -> Result<Vec<Account>> {
+        let Some(u) = self.shared.store.user_by_telegram_id(tg_user_id).await? else {
+            return Ok(vec![]);
+        };
+        self.shared.store.accounts_for_user(u.id).await
+    }
+
+    /// Language for a Telegram user: their setting, else their Telegram client language.
+    pub async fn lang_for(&self, tg: &TgUser) -> crate::i18n::Lang {
+        let stored = self
+            .shared
+            .store
+            .user_by_telegram_id(tg.id.0 as i64)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|u| u.lang());
+        crate::i18n::Lang::from_code(stored.as_deref().or(tg.language_code.as_deref()))
     }
 
     /// Persist a freshly verified Tzibbur session (encrypted) and start its runtime.
@@ -60,10 +95,13 @@ impl App {
         &self,
         tg: &TgUser,
         session: Session,
+        add: bool,
     ) -> Result<(Account, Arc<AccountRuntime>)> {
         let user = self.bridge_user(tg).await?;
-        // One account per Telegram user: stop any previous runtime first.
-        if let Some(prev) = self.shared.store.account_for_user(user.id).await? {
+        // Replace mode: stop and retire the previous account (unless it is the same identity).
+        // Add mode: keep existing accounts running.
+        let prev = self.shared.store.account_for_user(user.id).await?;
+        if let Some(prev) = prev.filter(|p| !add || p.tzibbur_user_id == session.user.id) {
             self.registry.remove(prev.id).await;
             if prev.tzibbur_user_id != session.user.id {
                 // Different Tzibbur identity: the old account's topics would otherwise linger in
@@ -96,6 +134,11 @@ impl App {
             )
             .await?;
         let rt = start_runtime(&self.shared, &self.registry, &account).await?;
+        self.shared
+            .store
+            .set_user_setting(user.id, "active_account", serde_json::json!(account.id))
+            .await
+            .ok();
         Ok((account, rt))
     }
 
@@ -113,6 +156,15 @@ impl App {
                 .set_account_status(account.id, AccountStatus::Disconnected)
                 .await
         }
+    }
+
+    /// (account id, sync state) for every running runtime.
+    pub fn accounts_for_all_running(&self) -> Vec<(i64, tzibbur_api::SyncState)> {
+        self.registry
+            .snapshot()
+            .into_iter()
+            .map(|rt| (rt.account_id, rt.sync_state()))
+            .collect()
     }
 
     pub fn runtime(&self, account_id: i64) -> Result<Arc<AccountRuntime>> {
