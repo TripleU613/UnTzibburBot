@@ -20,6 +20,27 @@ Telegram topic  ─▶ teloxide handlers      ─▶ AccountRuntime ─▶ outbo
 - Fallback when topics are unavailable: messages arrive tagged with the group name; replying to one routes the answer to that group.
 - Privacy-minimal storage: Directus holds ids, mappings and the AES-256-GCM–encrypted session only. Message bodies live in a per-account SQLite cache under `BRIDGE_DATA_DIR` (needed for sync/dedup) and in Tzibbur.
 
+## Privacy & threat model
+
+The bridge is public and self-service: anyone can `/connect` their own Tzibbur
+account. It is designed so the **operator cannot read users' messages**:
+
+| Data | Where | Operator access |
+|---|---|---|
+| Message text | In memory only while relaying. Erased from the per-account SQLite cache the moment a message is delivered to Telegram or confirmed by Tzibbur (`redact_messages` / `redact_confirmed_outbox`). Never written to Directus or logs. | None at rest. |
+| Message ids, seqs, sender ids | SQLite cache + Directus `bridge_messages` | Yes (needed for dedup/replies) |
+| Group list, names, topic mapping | Directus `bridge_conversations` | Yes (metadata) |
+| Telegram id, Tzibbur user id, phone | Directus `bridge_users` / `bridge_accounts` | Yes |
+| Member names/phones of a user's groups | SQLite cache (for sender labels) | Yes |
+| Tzibbur session token | Directus, AES-256-GCM with `BRIDGE_MASTER_KEY` (kept only in the bridge container env) | **Yes, unavoidably** — an always-on relay must hold the credential. |
+| SMS codes | Nowhere (the OTP message is deleted from Telegram immediately) | None |
+| Telegram chat history | Telegram never exposes it to bots | None |
+
+What no bridge can promise: the process sees plaintext in transit and holds the
+session, so a malicious operator could modify the code to capture either. Users
+can see the same statement in the bot via `/privacy`; `/disconnect` erases the
+session, and "Disconnect & erase" removes every mapping.
+
 ## Run
 
 ```sh

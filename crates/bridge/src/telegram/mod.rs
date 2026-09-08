@@ -46,8 +46,10 @@ pub enum Command {
     Disconnect,
     #[command(description = "support the bridge with Telegram Stars")]
     Donate,
-    #[command(description = "Tzibbur terms & privacy")]
+    #[command(description = "Tzibbur terms & privacy policy")]
     Legal,
+    #[command(description = "what this bridge stores and who can see what")]
+    Privacy,
     #[command(description = "cancel the current action")]
     Cancel,
     #[command(description = "this help")]

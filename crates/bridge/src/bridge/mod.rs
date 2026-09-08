@@ -370,7 +370,13 @@ impl AccountRuntime {
         let topic_id = self.create_topic(&g.name).await;
         // Everything already cached counts as history: import the tail, bookmark the rest.
         let max_seq = self.local.max_seq(&g.id)?.unwrap_or(0);
-        let history = self.local.thread(&g.id, self.shared.cfg.history_import)?;
+        // Only messages whose text is still in the cache can be imported; redacted ones are skipped.
+        let history: Vec<MessageEntity> = self
+            .local
+            .thread(&g.id, self.shared.cfg.history_import)?
+            .into_iter()
+            .filter(|m| !m.body.is_empty())
+            .collect();
         let bookmark = history.first().map(|m| m.seq - 1).unwrap_or(max_seq).max(0);
         let conv = self
             .shared
@@ -481,6 +487,9 @@ impl AccountRuntime {
             {
                 continue; // idempotent across restarts
             }
+            if m.body.is_empty() {
+                continue; // already redacted ⇒ already delivered
+            }
             let label = format::sender_label(
                 &m,
                 &members,
@@ -512,6 +521,10 @@ impl AccountRuntime {
                 .advance_forwarded_seq(&conv, max_seq)
                 .await?;
             conv.last_forwarded_seq = max_seq;
+            // Privacy: once delivered to Telegram, the text has no reason to stay on the server.
+            if let Err(e) = self.local.redact_messages(&conv.group_id, max_seq) {
+                tracing::warn!(error = %e, "redaction failed");
+            }
             if settings.auto_mark_read {
                 if let Err(e) = self.sync.mark_read(&conv.group_id, max_seq).await {
                     tracing::debug!(error = %e, "auto mark read failed");
@@ -696,6 +709,10 @@ impl AccountRuntime {
                 client_message_id,
                 message,
             } => {
+                let _ = self.local.redact_confirmed_outbox();
+                let _ = self
+                    .local
+                    .redact_messages(&message.group_id.clone().unwrap_or_default(), message.seq);
                 self.shared
                     .store
                     .confirm_outbound(&client_message_id, &message.id, message.seq)

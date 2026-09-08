@@ -368,6 +368,13 @@ pub trait LocalStore: Send + Sync {
     fn command_replies(&self, group_id: &str) -> Result<Vec<LocalCommandReplyEntity>>;
     fn clear_command_replies(&self, group_id: &str) -> Result<usize>;
 
+    // ---- privacy ----
+    /// Blank message bodies (and the group preview) for `group_id` up to and
+    /// including `up_to_seq`, keeping ids/seqs/senders for dedup and ordering.
+    fn redact_messages(&self, group_id: &str, up_to_seq: i64) -> Result<usize>;
+    /// Blank bodies of `CONFIRMED` outbox rows.
+    fn redact_confirmed_outbox(&self) -> Result<usize>;
+
     // ---- session wipe ----
     /// Delete every row from every table.
     fn clear_all(&self) -> Result<()>;

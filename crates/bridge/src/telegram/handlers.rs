@@ -133,7 +133,7 @@ pub async fn on_command(
                     "⚠️ Your Tzibbur session expired. Use /reconnect to sign in again; your topics will be reused.".to_owned()
                 }
                 _ => format!(
-                    "👋 <b>Tzibbur ↔ Telegram</b>\n\nI turn each of your Tzibbur groups into a topic in this chat, so you can read and reply from Telegram.\n\n• Tzibbur stays the source of truth; I keep only ids and an encrypted session.\n• Messages are plain text (that's all Tzibbur supports).\n\nTap <b>/connect</b> to sign in with your phone number{}.",
+                    "👋 <b>Tzibbur ↔ Telegram</b>\n\nI turn each of your Tzibbur groups into a topic in this chat, so you can read and reply from Telegram.\n\n• Tzibbur stays the source of truth; I keep only ids and an encrypted session.\n• Messages are plain text (that's all Tzibbur supports).\n\nTap <b>/connect</b> to sign in with your phone number{}. See /privacy for what is (and isn't) stored.",
                     if app.shared.cfg.public_url.is_some() { ", or use the ≡ menu button for the secure login page" } else { "" }
                 ),
             };
@@ -297,6 +297,7 @@ pub async fn on_command(
             )
             .await?;
         }
+        Command::Privacy => say(&bot, &msg, PRIVACY_TEXT).await?,
         Command::Legal => {
             let client = TzibburClient::builder().base_url(app.shared.cfg.tzibbur_base_url.clone()).device(app.shared.cfg.device.clone()).build()?;
             for key in [LegalDocKey::Terms, LegalDocKey::Privacy] {
@@ -312,6 +313,20 @@ pub async fn on_command(
     }
     Ok(())
 }
+
+pub const PRIVACY_TEXT: &str = "<b>What this bridge keeps, and who can see it</b>\n\n\
+<b>Stored on the bridge server</b>\n\
+• Your Telegram id, your Tzibbur user id and phone, the list of your groups, and which Telegram topic each maps to.\n\
+• Message <i>ids</i> and sequence numbers (to avoid duplicates). Message <b>text is erased from the server the moment it is delivered</b> to Telegram or confirmed by Tzibbur.\n\
+• Your Tzibbur session token, encrypted. The bridge needs it to stay connected for you 24/7, so the server operator technically holds it — the same trust you place in any always-on relay.\n\n\
+<b>Not stored</b>\n\
+• Message text at rest, photos (Tzibbur has none), SMS codes, your Telegram messages.\n\n\
+<b>What the operator cannot do</b>\n\
+• Read your Telegram chat history — Telegram never gives bots that.\n\
+• Read past Tzibbur messages from the bridge — there is no text on disk.\n\n\
+<b>Your controls</b>\n\
+• /disconnect erases the session; “Disconnect &amp; erase” also removes every mapping.\n\
+• Nothing about you is logged beyond ids and error codes.";
 
 fn settings_kb(s: &AccountSettings) -> InlineKeyboardMarkup {
     let on = |b: bool| if b { "✅" } else { "⬜" };

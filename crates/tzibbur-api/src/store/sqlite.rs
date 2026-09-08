@@ -318,7 +318,7 @@ fn tx_confirm_sent(
 fn tx_refresh_group_preview(tx: &Transaction<'_>, group_id: &str) -> Result<()> {
     tx.execute(
         "UPDATE groups SET
-            lastMessagePreview = (SELECT body FROM messages WHERE groupId = ?1 ORDER BY seq DESC LIMIT 1),
+            lastMessagePreview = NULLIF((SELECT body FROM messages WHERE groupId = ?1 ORDER BY seq DESC LIMIT 1), ''),
             lastActivityAt = MAX(COALESCE(lastActivityAt, 0),
                                  COALESCE((SELECT createdAt FROM messages WHERE groupId = ?1 ORDER BY seq DESC LIMIT 1), 0))
          WHERE id = ?1",
@@ -1015,6 +1015,30 @@ impl LocalStore for SqliteStore {
         Ok(n)
     }
 
+    // ---- privacy ----
+
+    fn redact_messages(&self, group_id: &str, up_to_seq: i64) -> Result<usize> {
+        let n = self.with_tx(|tx| {
+            let n = tx.execute(
+                "UPDATE messages SET body = '' WHERE groupId = ?1 AND seq <= ?2 AND body != ''",
+                params![group_id, up_to_seq],
+            )?;
+            tx.execute(
+                "UPDATE groups SET lastMessagePreview = NULL WHERE id = ?1",
+                params![group_id],
+            )?;
+            Ok(n)
+        })?;
+        Ok(n)
+    }
+
+    fn redact_confirmed_outbox(&self) -> Result<usize> {
+        Ok(self.conn.lock().execute(
+            "UPDATE outbox SET body = '' WHERE state = 'CONFIRMED' AND body != ''",
+            [],
+        )?)
+    }
+
     // ---- wipe ----
 
     fn clear_all(&self) -> Result<()> {
@@ -1171,6 +1195,36 @@ mod tests {
             .next_dispatchable(now_epoch_ms() + 1, 0)
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn redaction_keeps_ids_drops_text() {
+        let s = SqliteStore::in_memory().unwrap();
+        s.upsert_group(&group("g")).unwrap();
+        s.insert_messages(&[msg("a", "g", 1, "u", None), msg("b", "g", 2, "u", None)])
+            .unwrap();
+        assert_eq!(s.redact_messages("g", 1).unwrap(), 1);
+        let t = s.thread("g", 10).unwrap();
+        assert_eq!((t[0].body.as_str(), t[1].body.as_str()), ("", "body 2"));
+        assert!(s
+            .get_group("g")
+            .unwrap()
+            .unwrap()
+            .last_message_preview
+            .is_none());
+        // Dedup still works on ids/seqs after redaction.
+        let out = s
+            .store_incoming_batch("g", vec![msg("a", "g", 1, "u", None)])
+            .unwrap();
+        assert_eq!(out.inserted, 0);
+        let e = OutboxEntity::new("g", "secret");
+        s.insert_outbox(&e).unwrap();
+        s.confirm_sent(&e.client_message_id, "srv", 3).unwrap();
+        assert_eq!(s.redact_confirmed_outbox().unwrap(), 1);
+        assert_eq!(
+            s.get_outbox(&e.client_message_id).unwrap().unwrap().body,
+            ""
+        );
     }
 
     #[test]
