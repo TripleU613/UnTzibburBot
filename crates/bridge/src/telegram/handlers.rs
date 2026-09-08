@@ -261,6 +261,7 @@ async fn on_command_inner(
         Command::Help => say(&bot, &msg, &app, escape_html(&Command::descriptions().to_string())).await?,
         Command::Cancel => {
             dialogue.exit().await?;
+            app.clear_dialogue(msg.chat.id.0);
             say(&bot, &msg, &app, "Cancelled.").await?;
         }
         Command::Connect | Command::Reconnect => begin_connect(&bot, &msg, &app, &dialogue).await?,
@@ -327,6 +328,7 @@ async fn on_command_inner(
         }
         Command::NewGroup => {
             connected_runtime(&app, &tg).await?;
+            app.touch_dialogue(msg.chat.id.0);
             dialogue.update(State::AwaitGroupName).await?;
             say(&bot, &msg, &app, "Group name?").await?;
         }
@@ -358,6 +360,7 @@ async fn on_command_inner(
                     Err(e) => say(&bot, &msg, &app, format!("Could not rename: {}", escape_html(&e.to_string()))).await?,
                 },
                 TextValidation::Empty => {
+                    app.touch_dialogue(msg.chat.id.0);
                     dialogue.update(State::AwaitRename { conv_id: conv.id }).await?;
                     say(&bot, &msg, &app, "New name?").await?;
                 }
@@ -725,6 +728,7 @@ async fn begin_connect(bot: &BridgeBot, msg: &Message, app: &App, dialogue: &Dia
             return Ok(());
         }
     }
+    app.touch_dialogue(msg.chat.id.0);
     dialogue.update(State::AwaitPhone).await?;
     let thread = thread_for(app, msg).await;
     send_phone_prompt(bot, msg.chat.id, thread, app).await
@@ -753,6 +757,12 @@ async fn on_phone_inner(
     dialogue: Dialog,
     app: Arc<App>,
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        tidy_stray_thread(&bot, &app, &msg).await;
+        return Ok(());
+    }
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?;
     // Shared contact (the button), or typed text.
@@ -807,6 +817,12 @@ async fn on_name_inner(
     app: Arc<App>,
     phone: String,
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        tidy_stray_thread(&bot, &app, &msg).await;
+        return Ok(());
+    }
     typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let raw = msg.text().unwrap_or_default().trim();
@@ -889,6 +905,12 @@ async fn on_code_inner(
     app: Arc<App>,
     (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        tidy_stray_thread(&bot, &app, &msg).await;
+        return Ok(());
+    }
     typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
@@ -1015,6 +1037,12 @@ async fn on_group_name_inner(
     dialogue: Dialog,
     app: Arc<App>,
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        tidy_stray_thread(&bot, &app, &msg).await;
+        return Ok(());
+    }
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let rt = connected_runtime(&app, &tg).await?;
@@ -1074,6 +1102,12 @@ async fn on_group_phones_inner(
     app: Arc<App>,
     (name, category): (String, String),
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        tidy_stray_thread(&bot, &app, &msg).await;
+        return Ok(());
+    }
     typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
@@ -1152,14 +1186,8 @@ async fn on_message_inner(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result
     }
     let tg = from(&msg)?.clone();
     let Some(conv) = resolve_conversation(&app, &msg).await? else {
+        // Plain text outside a group topic: stay quiet. Commands are handled elsewhere.
         tidy_stray_thread(&bot, &app, &msg).await;
-        say(
-            &bot,
-            &msg,
-            &app,
-            "To write to a group, open its topic. /help lists commands.",
-        )
-        .await?;
         return Ok(());
     };
     let rt = match connected_runtime(&app, &tg).await {
@@ -1314,6 +1342,7 @@ pub async fn on_callback(
             }
         }
         "connect" | "reconnect" => {
+            app.touch_dialogue(chat_id.0);
             dialogue.update(State::AwaitPhone).await?;
             send_phone_prompt(&bot, chat_id, thread, &app).await?;
         }

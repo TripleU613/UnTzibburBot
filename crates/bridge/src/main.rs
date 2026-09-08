@@ -76,6 +76,7 @@ async fn main() -> Result<()> {
         shared: shared.clone(),
         registry: Registry::default(),
         bot_username: me.username().to_owned(),
+        dialogue_activity: Default::default(),
     });
 
     telegram::setup_bot_profile(&bot, &app)

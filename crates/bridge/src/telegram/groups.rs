@@ -290,6 +290,7 @@ pub async fn on_callback(
                     return Ok(toast);
                 }
                 "add" => {
+                    app.touch_dialogue(chat.0);
                     dialogue.update(State::AwaitAddPhones { conv_id }).await?;
                     let mut r = bot
                         .send_message(chat, "Send the phone numbers to add, or /cancel.")
@@ -301,6 +302,7 @@ pub async fn on_callback(
                     return Ok(toast);
                 }
                 "rename" => {
+                    app.touch_dialogue(chat.0);
                     dialogue.update(State::AwaitRename { conv_id }).await?;
                     let mut r = bot.send_message(chat, "New name?").parse_mode(HTML);
                     if let Some(t) = thread {
@@ -435,6 +437,11 @@ pub async fn on_rename(
     app: Arc<App>,
     conv_id: i64,
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        return Ok(());
+    }
     let tg = msg.from.as_ref().ok_or_else(|| anyhow!("no sender"))?;
     let (rt, conv) = conv_for(&app, tg.id.0 as i64, conv_id).await?;
     match validate_group_name(msg.text().unwrap_or_default()) {
@@ -478,6 +485,11 @@ pub async fn on_add_phones(
     app: Arc<App>,
     conv_id: i64,
 ) -> Result<()> {
+    if !app.touch_dialogue(msg.chat.id.0) {
+        dialogue.exit().await?;
+        app.clear_dialogue(msg.chat.id.0);
+        return Ok(());
+    }
     let tg = msg.from.as_ref().ok_or_else(|| anyhow!("no sender"))?;
     let (rt, conv) = conv_for(&app, tg.id.0 as i64, conv_id).await?;
     let (phones, bad) = parse_phone_list(

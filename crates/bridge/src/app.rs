@@ -11,6 +11,28 @@ pub struct App {
     pub shared: Arc<Shared>,
     pub registry: Registry,
     pub bot_username: String,
+    /// Last activity per chat in a multi-step flow; flows go stale after 10 minutes.
+    pub dialogue_activity: dashmap::DashMap<i64, std::time::Instant>,
+}
+
+/// A multi-step flow (sign-in, new group, rename) is abandoned after this long.
+pub const DIALOGUE_TTL: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+impl App {
+    /// Record activity for a chat's flow and report whether the flow is still fresh.
+    pub fn touch_dialogue(&self, chat_id: i64) -> bool {
+        let now = std::time::Instant::now();
+        let fresh = self
+            .dialogue_activity
+            .get(&chat_id)
+            .map(|t| now.duration_since(*t) < DIALOGUE_TTL)
+            .unwrap_or(true);
+        self.dialogue_activity.insert(chat_id, now);
+        fresh
+    }
+    pub fn clear_dialogue(&self, chat_id: i64) {
+        self.dialogue_activity.remove(&chat_id);
+    }
 }
 
 impl App {
