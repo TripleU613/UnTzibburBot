@@ -56,7 +56,6 @@ pub async fn card(
         .as_ref()
         .map(|l| l.message_max_length())
         .unwrap_or(crate::bridge::MAX_OUTBOUND_CHARS);
-    let unread = live.as_ref().and_then(|l| l.unread_count).unwrap_or(0);
 
     let mut text = format!(
         "<b>{}</b>\n{} · {} member(s) · you are {}{}\n",
@@ -75,9 +74,6 @@ pub async fn card(
             perm_label(&g.who_can_add_members),
             max_len
         ));
-        if unread > 0 {
-            text.push_str(&format!(" · {unread} unread on Tzibbur"));
-        }
         text.push('\n');
         if g.member_count < min_members {
             text.push_str(&format!(
@@ -109,13 +105,10 @@ pub async fn card(
             ]);
         }
     }
-    let mut row = vec![
-        btn("Mark read", format!("g:{c}:read")),
-        btn(
-            if g.muted { "Unmute" } else { "Mute" },
-            format!("g:{c}:mute"),
-        ),
-    ];
+    let mut row = vec![btn(
+        if g.muted { "Unmute" } else { "Mute" },
+        format!("g:{c}:mute"),
+    )];
     if g.kind != GroupKind::System {
         row.push(btn("Leave", format!("g:{c}:leave")));
     }
@@ -326,14 +319,6 @@ pub async fn on_callback(
                             .await?;
                     }
                     toast = "Updated".into();
-                }
-                "read" => {
-                    let seq = rt.mark_read(&conv).await?;
-                    toast = if seq > 0 {
-                        "Marked read".into()
-                    } else {
-                        "Nothing to mark".into()
-                    };
                 }
                 "mute" => {
                     let g = rt

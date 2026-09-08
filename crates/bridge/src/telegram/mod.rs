@@ -37,8 +37,6 @@ pub enum Command {
     Manage,
     #[command(description = "Delete this group (admins)")]
     DeleteGroup,
-    #[command(description = "Mark this group read")]
-    Read,
     #[command(description = "Check which phone numbers are on Tzibbur")]
     Contacts(String),
     #[command(description = "List your Tzibbur devices")]

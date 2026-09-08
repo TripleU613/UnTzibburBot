@@ -926,18 +926,6 @@ impl AccountRuntime {
             .await
     }
 
-    /// Mark everything in the group read on Tzibbur.
-    pub async fn mark_read(&self, conv: &Conversation) -> Result<i64> {
-        let seq = self.local.max_seq(&conv.group_id)?.unwrap_or(0);
-        if seq > 0 {
-            self.sync
-                .mark_read(&conv.group_id, seq)
-                .await
-                .map_err(anyhow::Error::new)?;
-        }
-        Ok(seq)
-    }
-
     /// Messages that failed with `group-too-small`: retry once the group has enough members.
     pub async fn retry_too_small(&self, group_id: &str) {
         let Ok(rows) = self.local.failed_outbox(group_id) else {
@@ -1040,13 +1028,11 @@ impl AccountRuntime {
                     .message_by_client_id(&client_message_id)
                     .await?
                 {
-                    if let Some(tg) = map
+                    if let Some(_tg) = map
                         .telegram_message_id
                         .as_deref()
                         .and_then(|s| s.parse::<i32>().ok())
-                    {
-                        self.react(tg, "👍").await;
-                    }
+                    {}
                 }
             }
             OutboxEvent::Rejected {
@@ -1101,31 +1087,12 @@ impl AccountRuntime {
                             req = req.message_thread_id(ThreadId(MessageId(t)));
                         }
                         req.await.ok();
-                        self.react(tg, "👎").await;
                     }
                 }
             }
             OutboxEvent::Rescheduled { .. } => {}
         }
         Ok(())
-    }
-
-    async fn react(&self, telegram_message_id: i32, emoji: &str) {
-        use teloxide::types::ReactionType;
-        let r = self
-            .shared
-            .bot
-            .set_message_reaction(
-                ChatId(self.telegram_chat_id),
-                MessageId(telegram_message_id),
-            )
-            .reaction(vec![ReactionType::Emoji {
-                emoji: emoji.to_owned(),
-            }])
-            .await;
-        if let Err(e) = r {
-            tracing::debug!(error = %e, "reaction failed (ignored)");
-        }
     }
 }
 

@@ -158,6 +158,8 @@ fn friendly(e: &anyhow::Error) -> String {
                 "The group needs at least {} members before anyone can post.",
                 min_members.unwrap_or(3)
             ),
+            AppError::Forbidden { .. } => "Only group admins can do that.".into(),
+            AppError::LastAdmin { .. } => "A group needs at least one admin.".into(),
             AppError::Network { .. } => "Tzibbur is unreachable. Try again shortly.".into(),
             other => other.to_string(),
         };
@@ -312,14 +314,12 @@ async fn on_command_inner(
             } else {
                 let mut out = String::from("<b>Your Tzibbur groups</b>\n");
                 for r in rows {
-                    let unread = if r.unread_count > 0 { format!(" · {} unread", r.unread_count) } else { String::new() };
-                    let muted = if r.group.muted { " " } else { "" };
+                    let muted = if r.group.muted { " (muted)" } else { "" };
                     out.push_str(&format!(
-                        "• {}{} — {} member(s){}\n",
+                        "• {}{} — {} members\n",
                         escape_html(&r.group.name),
                         muted,
-                        r.group.member_count,
-                        unread
+                        r.group.member_count
                     ));
                 }
                 say(&bot, &msg, &app, out).await?;
@@ -351,6 +351,7 @@ async fn on_command_inner(
         }
         Command::Rename(arg) => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            require_admin(&rt, &conv).await?;
             match validate_group_name(&arg) {
                 TextValidation::Valid { text } => match rt.rename_group(&conv, &text).await {
                     Ok(()) => say(&bot, &msg, &app, format!("Renamed to <b>{}</b>.", escape_html(&text))).await?,
@@ -365,6 +366,7 @@ async fn on_command_inner(
         }
         Command::Manage => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
+            require_admin(&rt, &conv).await?;
             let (text, kb) = super::groups::members_view(&rt, &conv).await?;
             say_kb(&bot, &msg, &app, text, kb).await?;
         }
@@ -383,11 +385,6 @@ async fn on_command_inner(
                 )
                 .await?;
             }
-        }
-        Command::Read => {
-            let (rt, conv) = topic_context(&app, &tg, &msg).await?;
-            let seq = rt.mark_read(&conv).await?;
-            say(&bot, &msg, &app, if seq > 0 { "Marked read." } else { "Nothing to mark." }).await?;
         }
         Command::Contacts(arg) => {
             let rt = connected_runtime(&app, &tg).await?;
@@ -495,14 +492,14 @@ async fn on_command_inner(
         }
         Command::Privacy => say(&bot, &msg, &app, PRIVACY_TEXT).await?,
         Command::Legal => {
-            let client = TzibburClient::builder().base_url(app.shared.cfg.tzibbur_base_url.clone()).device(app.shared.cfg.device.clone()).build()?;
+            let rt = connected_runtime(&app, &tg).await?;
             for key in [LegalDocKey::Terms, LegalDocKey::Privacy] {
-                match client.legal(key).await {
+                match rt.client().legal(key).await {
                     Ok(doc) => {
                         let text: String = doc.markdown.chars().take(3800).collect();
                         say(&bot, &msg, &app, format!("<b>{}</b>\n<pre>{}</pre>", key.as_str(), escape_html(&text))).await?;
                     }
-                    Err(e) => say(&bot, &msg, &app, format!("Could not fetch {}: {}", key.as_str(), escape_html(&e.to_string()))).await?,
+                    Err(e) => say(&bot, &msg, &app, format!("Could not fetch {}: {}", key.as_str(), escape_html(&friendly(&ae(e))))).await?,
                 }
             }
         }
@@ -630,6 +627,33 @@ pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> Strin
         s = "Nothing changed.".into();
     }
     s
+}
+
+/// Admin-only actions: say who the admins are instead of relaying Tzibbur's 403.
+async fn require_admin(rt: &crate::bridge::AccountRuntime, conv: &Conversation) -> Result<()> {
+    rt.sync_refresh_members(&conv.group_id).await.ok();
+    let g = rt
+        .local()
+        .get_group(&conv.group_id)?
+        .ok_or_else(|| anyhow!("group not cached"))?;
+    if g.my_role == tzibbur_api::models::Role::Admin {
+        return Ok(());
+    }
+    let admins: Vec<String> = rt
+        .local()
+        .members(&conv.group_id)?
+        .into_iter()
+        .filter(|m| m.role == tzibbur_api::models::Role::Admin)
+        .map(|m| m.display_name)
+        .collect();
+    Err(anyhow!(
+        "Only group admins can do that.{}",
+        if admins.is_empty() {
+            String::new()
+        } else {
+            format!(" Admins: {}.", admins.join(", "))
+        }
+    ))
 }
 
 async fn connected_runtime(app: &App, tg: &TgUser) -> Result<Arc<crate::bridge::AccountRuntime>> {
