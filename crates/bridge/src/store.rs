@@ -417,6 +417,19 @@ impl Store {
         Ok(())
     }
 
+    /// Drop every conversation and message mapping of an account, keep the account row.
+    pub async fn purge_account_mappings(&self, id: i64) -> Result<()> {
+        let convs: Vec<Conversation> = self.conversations_for_account(id).await?;
+        for c in convs {
+            self.d
+                .delete_where(&self.n.messages, &[Filter::eq("conversation", c.id)])
+                .await?;
+        }
+        self.d
+            .delete_where(&self.n.conversations, &[Filter::eq("account", id)])
+            .await
+    }
+
     /// Full deletion: mappings + account row.
     pub async fn purge_account(&self, id: i64) -> Result<()> {
         let convs: Vec<Conversation> = self.conversations_for_account(id).await?;

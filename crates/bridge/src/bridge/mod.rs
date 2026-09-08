@@ -101,6 +101,9 @@ pub struct AccountRuntime {
     task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Set once we told the user that topics are unavailable, to avoid nagging.
     topics_warning_sent: AtomicBool,
+    /// One lock per conversation: forwarding and topic (re)creation for a group never run
+    /// concurrently, so two events on a stale mapping cannot mint two topics.
+    conv_locks: DashMap<String, Arc<tokio::sync::Mutex<()>>>,
     db_path: PathBuf,
 }
 
@@ -147,6 +150,7 @@ impl AccountRuntime {
             cmd_rx: parking_lot::Mutex::new(Some(cmd_rx)),
             task: parking_lot::Mutex::new(None),
             topics_warning_sent: AtomicBool::new(false),
+            conv_locks: DashMap::new(),
             db_path,
         }))
     }
@@ -470,7 +474,25 @@ impl AccountRuntime {
 
     /// Find or create the topic mapping for a group. On creation, imports the
     /// most recent messages already in the local cache as history.
+    fn conv_lock(&self, group_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        self.conv_locks
+            .entry(group_id.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     pub async fn ensure_conversation(&self, g: &GroupEntity) -> Result<Conversation> {
+        if let Some(c) = self
+            .shared
+            .store
+            .conversation_by_group(self.account_id, &g.id)
+            .await?
+        {
+            return Ok(c);
+        }
+        let lock = self.conv_lock(&g.id);
+        let _guard = lock.lock().await;
+        // Re-check under the lock: a concurrent event may have created it meanwhile.
         if let Some(c) = self
             .shared
             .store
@@ -579,6 +601,16 @@ impl AccountRuntime {
         mut messages: Vec<MessageEntity>,
     ) -> Result<()> {
         messages.sort_by_key(|m| m.seq);
+        let lock = self.conv_lock(&conv.group_id);
+        let _guard = lock.lock().await;
+        // Fresh snapshot under the lock: another event may have advanced the bookmark or
+        // replaced the topic while we waited.
+        let conv = &self
+            .shared
+            .store
+            .conversation(conv.id)
+            .await?
+            .unwrap_or_else(|| conv.clone());
         let members = self.local.members(&conv.group_id).unwrap_or_default();
         let settings = self.settings();
         let mut conv = conv.clone();
@@ -1103,6 +1135,27 @@ fn is_missing_thread(e: &teloxide::RequestError) -> bool {
         || s.contains("topic_deleted")
         || s.contains("message thread not found")
         || s.contains("topic not found")
+}
+
+/// Remove every Telegram topic of an account and drop its mappings. Used when the user
+/// connects a different Tzibbur account, so the old account's groups do not linger.
+pub async fn retire_account_topics(shared: &Shared, account_id: i64) -> Result<usize> {
+    let convs = shared.store.conversations_for_account(account_id).await?;
+    let mut n = 0;
+    for c in &convs {
+        if let Some(t) = c.topic_id() {
+            match shared
+                .bot
+                .delete_forum_topic(ChatId(c.chat_id()), ThreadId(MessageId(t)))
+                .await
+            {
+                Ok(_) => n += 1,
+                Err(e) => tracing::debug!(error = %e, topic = t, "old topic already gone"),
+            }
+        }
+    }
+    shared.store.purge_account_mappings(account_id).await?;
+    Ok(n)
 }
 
 // ---------------------------------------------------------------------------

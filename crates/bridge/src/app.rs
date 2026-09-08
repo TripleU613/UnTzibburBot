@@ -44,7 +44,16 @@ impl App {
         if let Some(prev) = self.shared.store.account_for_user(user.id).await? {
             self.registry.remove(prev.id).await;
             if prev.tzibbur_user_id != session.user.id {
-                // Different Tzibbur identity: retire the old mapping set.
+                // Different Tzibbur identity: the old account's topics would otherwise linger in
+                // this chat next to the new ones. Remove them and their mappings.
+                let removed = crate::bridge::retire_account_topics(&self.shared, prev.id)
+                    .await
+                    .unwrap_or(0);
+                tracing::info!(
+                    account = prev.id,
+                    removed,
+                    "retired topics of the previous account"
+                );
                 self.shared
                     .store
                     .set_account_status(prev.id, AccountStatus::Disconnected)
