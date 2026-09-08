@@ -30,6 +30,16 @@ fn de_opt_i64_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i
         _ => Ok(None),
     }
 }
+/// Booleans come back as 0/1 on SQLite-backed Directus.
+fn de_bool_lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let v = Value::deserialize(d)?;
+    Ok(match &v {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_i64().unwrap_or(0) != 0,
+        Value::String(s) => matches!(s.as_str(), "1" | "true" | "TRUE"),
+        _ => false,
+    })
+}
 /// Relations may come back as the id or as an expanded object.
 fn de_fk<'de, D: serde::Deserializer<'de>>(d: D) -> Result<i64, D::Error> {
     let v = Value::deserialize(d)?;
@@ -149,7 +159,7 @@ pub struct Conversation {
     pub kind: Option<String>,
     #[serde(default, deserialize_with = "de_i64_lenient")]
     pub last_forwarded_seq: i64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_bool_lenient")]
     pub closed: bool,
 }
 
