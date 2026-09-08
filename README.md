@@ -1,3 +1,22 @@
+# UnTzibburBot — Tzibbur ↔ Telegram bridge
+
+Pure-Rust workspace, shipped as one Docker image, with Directus as the database.
+
+| Crate | What |
+|---|---|
+| [`crates/bridge`](crates/bridge/README.md) | The Telegram bot (`teloxide`). Each user's Tzibbur groups become topics in their private chat with the bot; messages flow both ways. Directus stores users, accounts (encrypted session), topic and message mappings. Mini App login, Telegram Stars, Docker Compose stack. |
+| [`crates/tzibbur-api`](#tzibbur-api) | Client library for the Tzibbur service (REST, WebSocket, SQLite cache, sync engine, outbox), reverse-engineered from the Android app and verified against the live server. |
+
+```sh
+cp .env.example .env          # bot token, Directus secrets, BRIDGE_MASTER_KEY
+docker compose up -d --build  # postgres + directus + bridge
+```
+
+See [`crates/bridge/README.md`](crates/bridge/README.md) for commands, configuration and the architecture.
+The original design notes are in `tzibbur-re.md` (protocol) and the architecture doc this replaces Cloudflare Workers/D1/Durable Objects with a single Rust process + Directus.
+
+---
+
 # tzibbur-api
 
 Rust client for the **Tzibbur** group-messaging service, reconstructed from the
