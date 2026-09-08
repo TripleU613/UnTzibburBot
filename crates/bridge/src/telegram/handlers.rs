@@ -16,9 +16,7 @@ use teloxide::types::{
 use teloxide::utils::command::BotCommands;
 use tzibbur_api::models::{CreateGroupRequest, LegalDocKey, VerifyAuthRequest};
 use tzibbur_api::prelude::*;
-use tzibbur_api::validation::{
-    is_valid_otp, looks_like_e164, normalize_phone, validate_display_name, validate_group_name,
-};
+use tzibbur_api::validation::{is_valid_otp, validate_display_name, validate_group_name};
 
 const HTML: ParseMode = ParseMode::Html;
 

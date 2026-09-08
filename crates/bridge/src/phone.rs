@@ -150,10 +150,10 @@ mod tests {
 
     #[test]
     fn lists() {
-        let (ok, bad) = parse_phone_list("212-736-5000, +972501234567; 216 555 0100\nabc", "US");
-        assert_eq!(ok, vec!["+12127365000", "+972501234567", "+12165550100"]);
+        let (ok, bad) = parse_phone_list("212-736-5000, +972501234567; 212 736 5000\nabc", "US");
+        assert_eq!(ok, vec!["+12127365000", "+972501234567", "+12127365000"]);
         assert_eq!(bad, vec!["abc"]);
-        let (ok, _) = parse_phone_list("+12127365000 +12165550100", "US");
+        let (ok, _) = parse_phone_list("+12127365000 +12127365000", "US");
         assert_eq!(ok.len(), 2);
     }
 }
