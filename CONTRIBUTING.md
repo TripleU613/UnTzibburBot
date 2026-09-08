@@ -5,6 +5,7 @@ Thanks for helping. This is a small, opinionated project; here is what makes a c
 ## Ground rules
 
 - Be kind. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
+- Rust only.
 - Never add code that stores or logs message text, phone numbers, or tokens. The privacy model in
   [`crates/bridge/README.md`](crates/bridge/README.md) is a hard constraint, not a preference.
 - No secrets, hostnames, IPs, or personal data in the repository, including tests and examples.
