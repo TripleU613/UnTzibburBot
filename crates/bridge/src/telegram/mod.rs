@@ -140,6 +140,7 @@ pub fn schema() -> UpdateHandler<anyhow::Error> {
     let pre_checkout = Update::filter_pre_checkout_query().endpoint(handlers::on_pre_checkout);
     dptree::entry()
         .branch(messages)
+        .branch(edited)
         .branch(callbacks)
         .branch(pre_checkout)
 }

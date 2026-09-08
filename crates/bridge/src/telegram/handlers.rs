@@ -366,7 +366,7 @@ pub async fn on_command(
                 Ok(devs) => {
                     let mut out = format!("<b>Your Tzibbur devices</b> ({})\n", devs.len());
                     for d in devs {
-                        let seen = d.last_seen_at.and_then(|ms| chrono::DateTime::from_timestamp_millis(ms)).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "never".into());
+                        let seen = d.last_seen_at.and_then(chrono::DateTime::from_timestamp_millis).map(|t| t.format("%Y-%m-%d %H:%M UTC").to_string()).unwrap_or_else(|| "never".into());
                         out.push_str(&format!(
                             "• {} {} — last seen {}\n",
                             escape_html(d.platform.as_deref().unwrap_or("?")),
@@ -1153,30 +1153,6 @@ pub fn split_for_tzibbur(text: &str, max: usize) -> Vec<String> {
         out.push(cur.trim_end().to_owned());
     }
     out
-}
-
-#[allow(dead_code)]
-async fn _unused_send_path(
-    bot: &BridgeBot,
-    msg: &Message,
-    conv: &Conversation,
-    rt: &crate::bridge::AccountRuntime,
-    text: String,
-) -> Result<()> {
-    if let Err(e) = rt.send_text(conv, &text, msg.id.0).await {
-        let mut r = bot
-            .send_message(
-                msg.chat.id,
-                format!("❌ Not sent: {}.", escape_html(&e.to_string())),
-            )
-            .parse_mode(HTML)
-            .reply_parameters(ReplyParameters::new(msg.id));
-        if let Some(t) = conv.topic_id() {
-            r = r.message_thread_id(ThreadId(MessageId(t)));
-        }
-        r.await?;
-    }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
