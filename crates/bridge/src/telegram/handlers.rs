@@ -46,8 +46,15 @@ async fn thread_for(app: &App, msg: &Message) -> Option<ThreadId> {
 /// the conversation with the bot lives in the main thread.
 async fn tidy_stray_thread(bot: &BridgeBot, app: &App, msg: &Message) {
     let Some(t) = msg.thread_id else { return };
-    if thread_for(app, msg).await.is_some() {
-        return;
+    // Only delete when we positively know the thread is not a group topic.
+    match app
+        .shared
+        .store
+        .conversation_by_topic(msg.chat.id.0, t.0 .0)
+        .await
+    {
+        Ok(None) => {}
+        _ => return,
     }
     if let Err(e) = bot.delete_forum_topic(msg.chat.id, t).await {
         tracing::debug!(error = %e, "could not delete stray thread");
@@ -134,10 +141,14 @@ fn friendly(e: &anyhow::Error) -> String {
             AppError::ReservedDisplayName { .. } => "That display name is reserved.".into(),
             AppError::ValidationFailed { errors, .. } => {
                 format!(
-                    "Tzibbur rejected the request: {}",
-                    errors.as_ref().map(|v| v.to_string()).unwrap_or_default()
+                    "Tzibbur rejected it: {}.",
+                    render_validation_errors(errors.as_ref())
                 )
             }
+            AppError::GroupTooSmall { min_members, .. } => format!(
+                "The group needs at least {} members before anyone can post.",
+                min_members.unwrap_or(3)
+            ),
             AppError::Network { .. } => {
                 "Tzibbur is unreachable right now. Try again shortly.".into()
             }
@@ -145,6 +156,49 @@ fn friendly(e: &anyhow::Error) -> String {
         };
     }
     e.to_string()
+}
+
+/// `[{path, message}]` or `{field: message}` → "field: message; field2: message2".
+fn render_validation_errors(errors: Option<&serde_json::Value>) -> String {
+    let Some(v) = errors else {
+        return "invalid input".into();
+    };
+    let items: Vec<String> = match v {
+        serde_json::Value::Array(a) => a
+            .iter()
+            .map(|e| {
+                let path = e["path"].as_str().unwrap_or("").trim_start_matches('/');
+                let msg = e["message"].as_str().unwrap_or("");
+                if path.is_empty() {
+                    msg.to_owned()
+                } else {
+                    format!("{path}: {msg}")
+                }
+            })
+            .collect(),
+        serde_json::Value::Object(o) => o
+            .iter()
+            .map(|(k, v)| {
+                format!(
+                    "{k}: {}",
+                    v.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| v.to_string())
+                )
+            })
+            .collect(),
+        other => vec![other.to_string()],
+    };
+    let joined = items
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ");
+    if joined.is_empty() {
+        "invalid input".into()
+    } else {
+        joined
+    }
 }
 
 fn ae(e: AppError) -> anyhow::Error {
@@ -155,7 +209,7 @@ fn ae(e: AppError) -> anyhow::Error {
 // Commands
 // ---------------------------------------------------------------------------
 
-pub async fn on_command(
+async fn on_command_inner(
     bot: BridgeBot,
     msg: Message,
     cmd: Command,
@@ -281,13 +335,9 @@ pub async fn on_command(
             if !bad.is_empty() {
                 say(&bot, &msg, &app, format!("Skipping (not valid numbers): {}", escape_html(&bad.join(", ")))).await?;
             }
-            match rt.client().add_members(&conv.group_id, &phones, None).await {
-                Ok(out) => {
-                    say(&bot, &msg, &app, format_add_outcome(&out)).await?;
-                    rt.sync_refresh_members(&conv.group_id).await.ok();
-                }
-                Err(e) => say(&bot, &msg, &app, format!("Could not add members: {}", escape_html(&friendly(&ae(e))))).await?,
-            }
+            let (out, failed) = add_members_carefully(&rt, &conv.group_id, &phones, &app.shared.cfg.default_region).await;
+            say(&bot, &msg, &app, format!("{}{}", format_add_outcome(&out), format_add_failures(&failed))).await?;
+            rt.sync_refresh_members(&conv.group_id).await.ok();
         }
         Command::Group => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
@@ -341,7 +391,7 @@ pub async fn on_command(
                 say(&bot, &msg, &app, "Usage: <code>/contacts 212-736-5000, +972 50 123 4567</code> — tells you who is on Tzibbur.").await?;
                 return Ok(());
             }
-            match rt.client().check_contacts_batched(&phones, None).await {
+            match rt.client().check_contacts_batched(&phones, Some(&app.shared.cfg.default_region)).await {
                 Ok(reg) => {
                     let on: Vec<String> = reg.iter().filter_map(|c| c.phone_e164.clone()).collect();
                     let off: Vec<String> = phones.iter().filter(|p| !on.contains(p)).cloned().collect();
@@ -498,6 +548,66 @@ fn parse_phones(app: &App, arg: &str) -> (Vec<String>, Vec<String>) {
     parse_phone_list(arg, &app.shared.cfg.default_region)
 }
 
+/// Add members, isolating numbers the server can't parse: one bad number must not sink the batch.
+/// Returns the merged outcome and `(phone, reason)` for numbers the server refused.
+pub async fn add_members_carefully(
+    rt: &crate::bridge::AccountRuntime,
+    group_id: &str,
+    phones: &[String],
+    region: &str,
+) -> (
+    tzibbur_api::models::AddMembersOutcome,
+    Vec<(String, String)>,
+) {
+    let mut outcome = tzibbur_api::models::AddMembersOutcome::default();
+    let mut failed = Vec::new();
+    match rt
+        .client()
+        .add_members(group_id, phones, Some(region))
+        .await
+    {
+        Ok(o) => return (o, failed),
+        Err(AppError::ValidationFailed { .. }) if phones.len() > 1 => {}
+        Err(e) => {
+            for p in phones {
+                failed.push((p.clone(), friendly(&ae(e.clone()))));
+            }
+            return (outcome, failed);
+        }
+    }
+    for p in phones {
+        match rt
+            .client()
+            .add_members(group_id, std::slice::from_ref(p), Some(region))
+            .await
+        {
+            Ok(o) => {
+                outcome.added.extend(o.added);
+                outcome.not_found.extend(o.not_found);
+                outcome.already_member.extend(o.already_member);
+            }
+            Err(e) => failed.push((p.clone(), friendly(&ae(e)))),
+        }
+    }
+    (outcome, failed)
+}
+
+pub fn format_add_failures(failed: &[(String, String)]) -> String {
+    if failed.is_empty() {
+        return String::new();
+    }
+    let mut s = String::from("⚠️ Refused by Tzibbur: ");
+    s.push_str(
+        &failed
+            .iter()
+            .map(|(p, why)| format!("{} ({})", escape_html(p), escape_html(why)))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    s.push('\n');
+    s
+}
+
 pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> String {
     use tzibbur_api::models::AddedMember;
     let added: Vec<String> = out
@@ -626,7 +736,12 @@ pub async fn send_phone_prompt(
     Ok(())
 }
 
-pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<App>) -> Result<()> {
+async fn on_phone_inner(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+) -> Result<()> {
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?;
     // Shared contact (the button), or typed text.
@@ -673,7 +788,7 @@ pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<A
     Ok(())
 }
 
-pub async fn on_name(
+async fn on_name_inner(
     bot: BridgeBot,
     msg: Message,
     dialogue: Dialog,
@@ -754,7 +869,7 @@ pub async fn on_name(
     }
 }
 
-pub async fn on_code(
+async fn on_code_inner(
     bot: BridgeBot,
     msg: Message,
     dialogue: Dialog,
@@ -886,7 +1001,7 @@ pub async fn finish_connect(
 // /newgroup dialogue
 // ---------------------------------------------------------------------------
 
-pub async fn on_group_name(
+async fn on_group_name_inner(
     bot: BridgeBot,
     msg: Message,
     dialogue: Dialog,
@@ -946,7 +1061,7 @@ pub async fn on_group_name(
     }
 }
 
-pub async fn on_group_phones(
+async fn on_group_phones_inner(
     bot: BridgeBot,
     msg: Message,
     dialogue: Dialog,
@@ -1002,15 +1117,22 @@ pub async fn on_group_phones(
             .await
         }
     };
+    let min_members = group
+        .limits
+        .as_ref()
+        .and_then(|l| l.min_members_to_post)
+        .unwrap_or(0);
     let mut report = format!("✅ Created <b>{}</b>.\n", escape_html(&group.name));
+    if min_members > 1 {
+        report.push_str(&format!(
+            "ℹ️ Tzibbur lets people post once the group has <b>{min_members}</b> members. Add more any time with /add inside its topic.\n"
+        ));
+    }
     if !phones.is_empty() {
-        match rt.client().add_members(&group.id, &phones, None).await {
-            Ok(out) => report.push_str(&format_add_outcome(&out)),
-            Err(e) => report.push_str(&format!(
-                "Could not add members: {}\n",
-                escape_html(&friendly(&ae(e)))
-            )),
-        }
+        let (out, failed) =
+            add_members_carefully(&rt, &group.id, &phones, &app.shared.cfg.default_region).await;
+        report.push_str(&format_add_outcome(&out));
+        report.push_str(&format_add_failures(&failed));
     }
     rt.sync_refresh().await.ok();
     say(&bot, &msg, &app, report).await
@@ -1020,7 +1142,7 @@ pub async fn on_group_phones(
 // Plain messages: topic replies → Tzibbur
 // ---------------------------------------------------------------------------
 
-pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()> {
+async fn on_message_inner(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()> {
     if !msg.chat.is_private() {
         return Ok(());
     }
@@ -1334,4 +1456,160 @@ mod tests {
         assert_eq!(parts.join(" ").split_whitespace().count(), 300);
         assert_eq!(split_for_tzibbur("short", 1000), vec!["short"]);
     }
+}
+
+/// Same as `on_command_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_command(
+    bot: BridgeBot,
+    msg: Message,
+    cmd: Command,
+    app: Arc<App>,
+    dialogue: Dialog,
+) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_command_inner(bot, msg, cmd, app, dialogue).await {
+        tracing::warn!(error = %e, "handler on_command failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_message_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_message_inner(bot, msg, app).await {
+        tracing::warn!(error = %e, "handler on_message failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_phone_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<App>) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_phone_inner(bot, msg, dialogue, app).await {
+        tracing::warn!(error = %e, "handler on_phone failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_name_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_name(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+    phone: String,
+) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_name_inner(bot, msg, dialogue, app, phone).await {
+        tracing::warn!(error = %e, "handler on_name failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_code_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_code(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+    (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
+) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_code_inner(
+        bot,
+        msg,
+        dialogue,
+        app,
+        (challenge_id, phone, display_name, failures),
+    )
+    .await
+    {
+        tracing::warn!(error = %e, "handler on_code failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_group_name_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_group_name(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_group_name_inner(bot, msg, dialogue, app).await {
+        tracing::warn!(error = %e, "handler on_group_name failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
+}
+
+/// Same as `on_group_phones_inner`, but failures are shown to the user instead of only logged.
+pub async fn on_group_phones(
+    bot: BridgeBot,
+    msg: Message,
+    dialogue: Dialog,
+    app: Arc<App>,
+    (name, category): (String, String),
+) -> Result<()> {
+    let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
+    if let Err(e) = on_group_phones_inner(bot, msg, dialogue, app, (name, category)).await {
+        tracing::warn!(error = %e, "handler on_group_phones failed");
+        say(
+            &bot_c,
+            &msg_c,
+            &app_c,
+            format!("⚠️ {}", escape_html(&friendly(&e))),
+        )
+        .await
+        .ok();
+    }
+    Ok(())
 }

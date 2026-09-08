@@ -112,6 +112,11 @@ pub enum AppError {
     LastAdmin { request_id: Option<String> },
     #[error("SMS delivery failed{}", fmt_rid(request_id))]
     SmsDeliveryFailed { request_id: Option<String> },
+    #[error("group too small to post{}{}", min_members.map(|m| format!(" (needs {m} members)")).unwrap_or_default(), fmt_rid(request_id))]
+    GroupTooSmall {
+        min_members: Option<u32>,
+        request_id: Option<String>,
+    },
     // ---- 429 ----
     #[error("rate limited{}{}", retry_after_seconds.map(|s| format!(" (retry after {s}s)")).unwrap_or_default(), fmt_rid(request_id))]
     RateLimited {
@@ -181,6 +186,7 @@ impl AppError {
             | GroupFull { request_id, .. }
             | LastAdmin { request_id }
             | SmsDeliveryFailed { request_id }
+            | GroupTooSmall { request_id, .. }
             | RateLimited { request_id, .. }
             | NotImplemented { request_id }
             | Internal { request_id }
@@ -203,7 +209,7 @@ impl AppError {
             Unauthorized { .. } | InvalidCode { .. } => 401,
             Forbidden { .. } => 403,
             NotFound { .. } => 404,
-            ClientMessageIdReused { .. } => 409,
+            ClientMessageIdReused { .. } | GroupTooSmall { .. } => 409,
             GroupFull { .. } | LastAdmin { .. } | SmsDeliveryFailed { .. } => 422,
             RateLimited { .. } => 429,
             NotImplemented { .. } => 501,
@@ -233,6 +239,7 @@ impl AppError {
             GroupFull { .. } => "group-full",
             LastAdmin { .. } => "last-admin",
             SmsDeliveryFailed { .. } => "sms-delivery-failed",
+            GroupTooSmall { .. } => "group-too-small",
             RateLimited { .. } => "rate-limited",
             NotImplemented { .. } => "not-implemented",
             Internal { .. } => "internal",
@@ -328,6 +335,13 @@ impl AppError {
             },
             "last-admin" => AppError::LastAdmin { request_id: rid },
             "sms-delivery-failed" => AppError::SmsDeliveryFailed { request_id: rid },
+            "group-too-small" => AppError::GroupTooSmall {
+                min_members: problem
+                    .extra_usize("minMembers")
+                    .or_else(|| problem.extra_usize("minMembersToPost"))
+                    .map(|v| v as u32),
+                request_id: rid,
+            },
             "rate-limited" => AppError::RateLimited {
                 retry_after_seconds: problem
                     .extra_usize("retryAfterSeconds")
@@ -360,7 +374,11 @@ impl AppError {
             401 => AppError::Unauthorized { request_id },
             403 => AppError::Forbidden { request_id },
             404 => AppError::NotFound { request_id },
-            409 => AppError::ClientMessageIdReused { request_id },
+            409 => AppError::Unknown {
+                status: Some(409),
+                request_id,
+                detail,
+            },
             429 => AppError::RateLimited {
                 retry_after_seconds: retry_after_header,
                 request_id,

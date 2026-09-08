@@ -327,6 +327,7 @@ impl AccountRuntime {
                         .await
                         .ok();
                 }
+                self.retry_too_small(&group_id).await;
             }
             SyncEvent::MemberRemoved {
                 group_id,
@@ -850,6 +851,48 @@ impl AccountRuntime {
         Ok(seq)
     }
 
+    /// Messages that failed with `group-too-small`: retry once the group has enough members.
+    pub async fn retry_too_small(&self, group_id: &str) {
+        let Ok(rows) = self.local.failed_outbox(group_id) else {
+            return;
+        };
+        let rows: Vec<_> = rows
+            .into_iter()
+            .filter(|r| r.error_code.as_deref() == Some("group-too-small"))
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        let Ok(g) = self.client.get_group(group_id).await else {
+            return;
+        };
+        let min = g
+            .limits
+            .as_ref()
+            .and_then(|l| l.min_members_to_post)
+            .unwrap_or(0) as i64;
+        if g.member_count < min {
+            return;
+        }
+        for r in rows {
+            let _ = self.local.retry_outbox(&r.client_message_id);
+        }
+        self.sync.outbox().poke();
+        if let Ok(Some(conv)) = self
+            .shared
+            .store
+            .conversation_by_group(self.account_id, group_id)
+            .await
+        {
+            self.send_note(
+                &conv,
+                "📨 The group is big enough now — resending your earlier message(s).",
+            )
+            .await
+            .ok();
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Outbound (Telegram → Tzibbur)
     // -----------------------------------------------------------------------
@@ -936,6 +979,14 @@ impl AccountRuntime {
                             .and_then(|s| s.parse::<i32>().ok()),
                     ) {
                         let reason = match code.as_str() {
+                            "group-too-small" => match self.client.get_group(&conv.group_id).await {
+                                Ok(g) => format!(
+                                    "Tzibbur requires {} members before anyone can post (the group has {}). Add members with /add — I'll resend this automatically once it's big enough",
+                                    g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(3),
+                                    g.member_count
+                                ),
+                                Err(_) => "the group is too small to post in yet; I'll resend once more members join".to_owned(),
+                            },
                             "forbidden" => match self.client.get_group(&conv.group_id).await {
                                 Ok(g) if (g.member_count as usize) < g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(0) as usize => format!(
                                     "this group needs at least {} members before anyone can post (it has {}). Add members with /add",

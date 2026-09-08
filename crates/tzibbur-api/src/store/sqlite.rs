@@ -954,6 +954,17 @@ impl LocalStore for SqliteStore {
         Ok(())
     }
 
+    fn failed_outbox(&self, group_id: &str) -> Result<Vec<OutboxEntity>> {
+        let conn = self.conn.lock();
+        let mut st = conn.prepare(&format!(
+            "SELECT {OUTBOX_COLS} FROM outbox WHERE groupId = ?1 AND state = 'PENDING' AND errorCode IS NOT NULL AND nextAttemptAt IS NULL ORDER BY createdAt ASC"
+        ))?;
+        let rows = st
+            .query_map(params![group_id], outbox_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     fn retry_outbox(&self, client_message_id: &str) -> Result<()> {
         let gid = self.outbox_group(client_message_id)?;
         self.conn.lock().execute(

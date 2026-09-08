@@ -360,6 +360,8 @@ pub trait LocalStore: Send + Sync {
     ) -> Result<()>;
     /// Clear the error and make the row dispatchable now.
     fn retry_outbox(&self, client_message_id: &str) -> Result<()>;
+    /// Rows that failed permanently (`PENDING`, `errorCode` set, no retry scheduled) for a group.
+    fn failed_outbox(&self, group_id: &str) -> Result<Vec<OutboxEntity>>;
     /// Move an outbox row to `CONFIRMED` with the server's id/seq.
     fn confirm_sent(&self, client_message_id: &str, server_id: &str, seq: i64) -> Result<()>;
 

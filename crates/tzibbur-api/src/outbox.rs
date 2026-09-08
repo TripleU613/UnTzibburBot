@@ -151,6 +151,27 @@ impl OutboxDispatcher {
         }
     }
 
+    /// Look for our message among the group's latest messages (by clientMessageId).
+    async fn verify_delivered(&self, row: &OutboxEntity) -> Result<Option<MessageDto>> {
+        let page = self
+            .client
+            .get_messages(
+                &row.group_id,
+                &crate::models::MessagesQuery::default().limit(100),
+            )
+            .await?;
+        let found = page
+            .into_iter()
+            .find(|m| m.client_message_id.as_deref() == Some(row.client_message_id.as_str()));
+        if let Some(m) = &found {
+            let entity = MessageEntity::from_dto(m.clone(), &row.group_id);
+            let _ = self
+                .store
+                .store_incoming_batch(&row.group_id, vec![entity])?;
+        }
+        Ok(found)
+    }
+
     /// Dispatch at most one row.
     pub async fn step(&self) -> Result<Step> {
         let now = now_epoch_ms();
@@ -166,11 +187,15 @@ impl OutboxDispatcher {
         }
         self.store.mark_in_flight(&row.client_message_id, now)?;
 
-        match self
-            .client
-            .send_message(&row.group_id, &row.client_message_id, &row.body)
-            .await
-        {
+        // A row the server is known to hold already: only verify, never POST again.
+        let send = if row.error_code.as_deref() == Some("client-message-id-reused") {
+            Err(AppError::ClientMessageIdReused { request_id: None })
+        } else {
+            self.client
+                .send_message(&row.group_id, &row.client_message_id, &row.body)
+                .await
+        };
+        match send {
             Ok(msg) => {
                 // Store through the reconciler so the echo path confirms the row; then make sure.
                 let entity = MessageEntity::from_dto(msg.clone(), &row.group_id);
@@ -185,16 +210,30 @@ impl OutboxDispatcher {
                 });
             }
             Err(AppError::ClientMessageIdReused { .. }) => {
-                // Server already has it; the WS echo / pending catch-up will confirm.
-                match self.store.get_outbox(&row.client_message_id)? {
-                    Some(r) if r.state == OutboxState::Confirmed => {}
-                    _ => {
+                // An earlier attempt got through but we never saw the reply: find it instead of failing.
+                match self.verify_delivered(&row).await {
+                    Ok(Some(msg)) => {
                         self.store
-                            .mark_rejected(&row.client_message_id, "client-message-id-reused")?;
-                        let _ = self.events.send(OutboxEvent::Rejected {
+                            .confirm_sent(&row.client_message_id, &msg.id, msg.seq)?;
+                        let _ = self.events.send(OutboxEvent::Confirmed {
                             client_message_id: row.client_message_id,
-                            code: "client-message-id-reused".into(),
+                            message: msg,
                         });
+                    }
+                    Ok(None) => {
+                        let next_at = now_epoch_ms()
+                            + backoff_delay(row.attempt_count as u32).as_millis() as i64;
+                        self.store.reschedule(
+                            &row.client_message_id,
+                            next_at,
+                            Some("client-message-id-reused"),
+                        )?;
+                    }
+                    Err(e) => {
+                        let next_at = now_epoch_ms()
+                            + backoff_delay(row.attempt_count as u32).as_millis() as i64;
+                        self.store
+                            .reschedule(&row.client_message_id, next_at, Some(e.code()))?;
                     }
                 }
             }

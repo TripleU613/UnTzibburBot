@@ -523,13 +523,15 @@ pub async fn on_add_phones(
             escape_html(&bad.join(", "))
         ));
     }
-    match rt.client().add_members(&conv.group_id, &phones, None).await {
-        Ok(out) => report.push_str(&super::handlers::format_add_outcome(&out)),
-        Err(e) => report.push_str(&format!(
-            "Could not add members: {}",
-            escape_html(&e.to_string())
-        )),
-    }
+    let (out, failed) = super::handlers::add_members_carefully(
+        &rt,
+        &conv.group_id,
+        &phones,
+        &app.shared.cfg.default_region,
+    )
+    .await;
+    report.push_str(&super::handlers::format_add_outcome(&out));
+    report.push_str(&super::handlers::format_add_failures(&failed));
     rt.sync_refresh_members(&conv.group_id).await.ok();
     reply(&bot, &msg, report).await
 }
