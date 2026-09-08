@@ -29,7 +29,7 @@ Inside a topic, `/group` opens the card above: members, permissions, rename, lea
 
 ## Privacy
 
-The bot relays messages; it does not keep them. Message text is erased the moment it is delivered. What stays is ids, topic mappings, and your Tzibbur session, encrypted under a key of its own, so the bot can stay connected for you. The short-lived local cache is encrypted too. Details in [SECURITY.md](SECURITY.md). `/privacy` in the bot says the same. No emojis, no tracking, no ads.
+The bot relays messages; it does not keep them. Message text is erased the moment it is delivered. What stays is ids, topic mappings, and your Tzibbur session, encrypted under a key of its own, so the bot can stay connected for you. The short-lived local cache is encrypted too. Details in [SECURITY.md](SECURITY.md). `/privacy` in the bot says the same.
 
 ## Run your own
 
