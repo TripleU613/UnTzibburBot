@@ -1,21 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="420" height="300" viewBox="0 0 420 300" role="img" aria-label="Topics in the bot chat">
-  <rect width="420" height="300" rx="24" fill="#0F1626"/>
+  <rect width="420" height="300" rx="24" fill="#0B1414"/>
   <text x="24" y="42" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="18" font-weight="700" fill="#FFFFFF">TzibburBot</text>
-  <text x="24" y="64" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#8A97B0">Topics</text>
+  <text x="24" y="64" font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" font-size="13" fill="#9FB3B1">Topics</text>
   <g font-family="Inter, -apple-system, Segoe UI, Helvetica, Arial, sans-serif">
-    <rect x="16" y="82" width="388" height="48" rx="12" fill="#1B2438"/>
-    <circle cx="44" cy="106" r="14" fill="#2E8CE6"/>
+    <rect x="16" y="82" width="388" height="48" rx="12" fill="#152222"/>
+    <circle cx="44" cy="106" r="14" fill="#1FD1C4"/>
     <text x="70" y="102" font-size="14" font-weight="600" fill="#FFFFFF">Family</text>
-    <text x="70" y="120" font-size="12" fill="#8A97B0">Miriam: are we still on for Sunday?</text>
-    <rect x="16" y="138" width="388" height="48" rx="12" fill="#1B2438"/>
-    <circle cx="44" cy="162" r="14" fill="#5BB7FF"/>
+    <text x="70" y="120" font-size="12" fill="#9FB3B1">Miriam: are we still on for Sunday?</text>
+    <rect x="16" y="138" width="388" height="48" rx="12" fill="#152222"/>
+    <circle cx="44" cy="162" r="14" fill="#5FE3D8"/>
     <text x="70" y="158" font-size="14" font-weight="600" fill="#FFFFFF">Shul announcements</text>
-    <text x="70" y="176" font-size="12" fill="#8A97B0">Minyan moved to 7:15 this week</text>
-    <rect x="16" y="194" width="388" height="48" rx="12" fill="#1B2438"/>
-    <circle cx="44" cy="218" r="14" fill="#7C9CC9"/>
+    <text x="70" y="176" font-size="12" fill="#9FB3B1">Minyan moved to 7:15 this week</text>
+    <rect x="16" y="194" width="388" height="48" rx="12" fill="#152222"/>
+    <circle cx="44" cy="218" r="14" fill="#1FA8A0"/>
     <text x="70" y="214" font-size="14" font-weight="600" fill="#FFFFFF">Carpool</text>
-    <text x="70" y="232" font-size="12" fill="#8A97B0">You: leaving in 10</text>
-    <rect x="16" y="250" width="388" height="34" rx="12" fill="#151D2F"/>
-    <text x="70" y="272" font-size="12" fill="#8A97B0">Tzibbur System</text>
+    <text x="70" y="232" font-size="12" fill="#9FB3B1">You: leaving in 10</text>
+    <rect x="16" y="250" width="388" height="34" rx="12" fill="#0F1A1A"/>
+    <text x="70" y="272" font-size="12" fill="#9FB3B1">Tzibbur System</text>
   </g>
 </svg>

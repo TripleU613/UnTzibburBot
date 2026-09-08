@@ -9,7 +9,7 @@ crates/
   tzibbur-api/   client library for the Tzibbur service: REST, WebSocket, SQLite cache,
                  sync engine, outbox (README inside)
   bridge/        the Telegram bot: teloxide handlers, per-account runtimes, Directus store
-assets/          logo, banner, avatar
+assets/          logo.png, avatar.png (for @BotFather), banner.png, topics.svg
 .github/         CI (fmt, clippy -D warnings, tests, docker build) and Deploy
 ```
 

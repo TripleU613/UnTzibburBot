@@ -1,6 +1,5 @@
-<img width="1254" height="1254" alt="ChatGPT Image Sep 8, 2026, 12_02_30 PM" src="https://github.com/user-attachments/assets/80802222-16d8-4bd4-90aa-95a264f286ac" />
 <p align="center">
-  <img src="assets/banner.svg" alt="Tzibbur for Telegram" width="720">
+  <img src="assets/banner.png" alt="Tzibbur for Telegram" width="880">
 </p>
 
 <p align="center">
@@ -23,7 +22,7 @@
 2. Send `/connect` and your phone number. Tzibbur texts you a code; send it back.
 3. Your groups appear as topics. Type in a topic to post to that group.
 
-<p align="center"><img src="assets/topics.svg" alt="Your groups as topics" width="420"></p>
+<p align="center"><img src="assets/topics.png" alt="Your groups as topics" width="420"></p>
 
 Inside a topic, `/group` manages the group: members, permissions, rename, leave. `/newgroup` creates one. `/help` lists everything.
 
