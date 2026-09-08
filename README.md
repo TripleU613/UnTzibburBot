@@ -15,9 +15,12 @@
 </p>
 
 ---
-
 <p align="center">
-  <img src="assets/screens/trio.png" alt="Topics, a group conversation, and the group card" width="900">
+  <img
+    src="https://github.com/user-attachments/assets/44d2d6f9-ce85-4c6d-bd7c-191b35f223c6"
+    alt="Topics, a group conversation, and the group card"
+    width="900"
+  />
 </p>
 
 ## Use it
