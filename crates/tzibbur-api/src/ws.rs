@@ -537,6 +537,7 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                     match frame {
                         Some(f) => {
                             let txt = serde_json::to_string(&f).unwrap_or_default();
+                            tracing::debug!(frame = %txt, "socket: -> outbound frame");
                             if let Err(e) = sink.send(Message::Text(txt)).await {
                                 reason = DisconnectReason::Error { cause: Some(e.to_string()) };
                                 break;

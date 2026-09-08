@@ -279,7 +279,7 @@ impl SyncEngine {
                 _ = safety_net.tick() => {
                     if self.sync_state() == SyncState::Connected {
                         self.catch_up_all_groups().await;
-                self.ack_all_delivered().await;
+                        self.ack_all_delivered().await;
                     } else if let Err(e) = self.refresh_now().await {
                         tracing::debug!(error = %e, "sync: periodic refresh failed");
                     }
@@ -330,6 +330,8 @@ impl SyncEngine {
                 // Safety net: pending/WS may not carry everything; page each group from its
                 // newest cached seq so nothing is missed regardless of delivery semantics.
                 self.catch_up_all_groups().await;
+                // Tell the server this device is caught up on everything it holds.
+                self.ack_all_delivered().await;
                 self.outbox.poke();
             }
             SocketEvent::Disconnected { reason } => {
@@ -372,7 +374,16 @@ impl SyncEngine {
                 }
             }
         }
+        let batch_len = batch.len();
         let outcome = self.store.store_incoming_batch(group_id, batch)?;
+        tracing::debug!(
+            group_id,
+            batch = batch_len,
+            inserted = outcome.inserted,
+            max_seq = ?outcome.plan.max_seq,
+            echoes = outcome.plan.echo_confirmations.len(),
+            "sync: batch applied"
+        );
         // Delivery acknowledgement. The server's `ack` advances the device's `deliveredSeq`
         // (verified live: `readSeq` is untouched) and it withholds further pushes until
         // the device has acknowledged what it was sent. The batch is already persisted, so
@@ -514,6 +525,13 @@ impl SyncEngine {
         let mut total = PendingResponse::default();
         loop {
             let page = self.client.pending(self.pending_limit).await?;
+            tracing::debug!(
+                buckets = page.messages.len(),
+                messages = page.message_count(),
+                groups = page.groups.len(),
+                events = page.events.len(),
+                "sync: pending page"
+            );
             for g in &page.groups {
                 self.store.upsert_group(&GroupEntity::from(g.clone()))?;
             }
@@ -553,19 +571,33 @@ impl SyncEngine {
         } else {
             self.client.ack(group_id, seq).await
         };
-        if let Err(e) = r {
-            tracing::debug!(error = %e, group_id, seq, "sync: delivery ack failed");
+        match r {
+            Ok(()) => tracing::debug!(
+                group_id,
+                seq,
+                live = self.sync_state() == SyncState::Connected,
+                "sync: delivery ack sent"
+            ),
+            Err(e) => tracing::warn!(error = %e, group_id, seq, "sync: delivery ack failed"),
         }
     }
 
-    /// Ack the newest cached seq of every group (used on connect so a device that was
-    /// behind is marked caught up even for batches stored by earlier runs).
+    /// Ack the newest cached seq of every group via REST. REST acks advance the
+    /// server's `deliveredSeq` to any value (verified live), so this reliably drains
+    /// `GET /v1/pending` even if a live WS ack was dropped (e.g. connection contention).
     pub async fn ack_all_delivered(&self) {
-        if let Ok(groups) = self.store.groups() {
-            for g in groups {
-                if let Ok(Some(seq)) = self.store.max_seq(&g.id) {
-                    self.ack_delivered(&g.id, seq).await;
+        let groups = match self.store.groups() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        for g in groups {
+            match self.store.max_seq(&g.id) {
+                Ok(Some(seq)) if seq > 0 => {
+                    if let Err(e) = self.client.ack(&g.id, seq).await {
+                        tracing::debug!(error = %e, group = %g.id, seq, "sync: REST delivery ack failed");
+                    }
                 }
+                _ => {}
             }
         }
     }
