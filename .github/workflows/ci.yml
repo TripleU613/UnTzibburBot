@@ -10,6 +10,8 @@ concurrency:
   cancel-in-progress: true
 permissions:
   contents: read
+  # paths-filter reads the pull request's file list through the API.
+  pull-requests: read
 jobs:
   test:
     runs-on: ubuntu-latest
