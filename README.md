@@ -1,3 +1,4 @@
+<img width="1254" height="1254" alt="ChatGPT Image Sep 8, 2026, 12_02_30 PM" src="https://github.com/user-attachments/assets/80802222-16d8-4bd4-90aa-95a264f286ac" />
 <p align="center">
   <img src="assets/banner.svg" alt="Tzibbur for Telegram" width="720">
 </p>
