@@ -187,13 +187,27 @@ impl App {
             self.registry.remove(account.id).await;
         }
         if purge {
-            self.shared.store.purge_account(account.id).await
+            self.shared.store.purge_account(account.id).await?;
         } else {
             self.shared
                 .store
                 .set_account_status(account.id, AccountStatus::Disconnected)
-                .await
+                .await?;
         }
+        // Back to the global "Connect" button once no account of this user is connected.
+        if let Some(user) = self.shared.store.user(account.user).await? {
+            if let Ok(chat_id) = user.telegram_user_id.parse::<i64>() {
+                let still_connected = self
+                    .accounts_for(chat_id)
+                    .await?
+                    .iter()
+                    .any(|a| a.status == AccountStatus::Connected);
+                if !still_connected {
+                    crate::bridge::set_menu_button(&self.shared, chat_id, false).await;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// (account id, sync state) for every running runtime.

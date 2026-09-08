@@ -23,7 +23,7 @@ use std::sync::Arc;
 use teloxide::adaptors::Throttle;
 use teloxide::prelude::*;
 use teloxide::types::{
-    ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MessageId, ParseMode, ThreadId,
+    ChatId, InlineKeyboardButton, InlineKeyboardMarkup, MenuButton, MessageId, ParseMode, ThreadId,
 };
 use tokio::sync::mpsc;
 use tzibbur_api::http::SessionInvalidationListener;
@@ -1314,7 +1314,28 @@ pub async fn start_runtime(
     rt.set_lang(crate::i18n::Lang::from_code(bridge_user.lang().as_deref()));
     rt.start();
     registry.insert(rt.clone());
+    // A connected user gets the regular commands menu instead of the global "Connect" button.
+    set_menu_button(shared, chat_id, true).await;
     Ok(rt)
+}
+
+/// Per-chat menu button: the commands menu while connected, the bot-wide default (the
+/// "Connect" Mini App button when a public URL is configured) otherwise.
+pub async fn set_menu_button(shared: &Shared, chat_id: i64, connected: bool) {
+    let menu = if connected {
+        MenuButton::Commands
+    } else {
+        MenuButton::Default
+    };
+    if let Err(e) = shared
+        .bot
+        .set_chat_menu_button()
+        .chat_id(ChatId(chat_id))
+        .menu_button(menu)
+        .await
+    {
+        tracing::debug!(chat_id, error = %e, "set_chat_menu_button failed");
+    }
 }
 
 /// Start runtimes for every connected account in Directus.
