@@ -600,6 +600,7 @@ pub async fn on_name(
             phone: phone.clone(),
             display_name: display_name.clone(),
             region: None,
+            ..Default::default()
         })
         .await
     {
@@ -677,6 +678,7 @@ pub async fn on_code(
         phone: phone.clone(),
         display_name: display_name.clone(),
         region: None,
+        ..Default::default()
     };
     match client.verify_auth(&req).await {
         Ok(session) => {

@@ -283,6 +283,7 @@ async fn rest_auth_and_error_mapping() {
             phone: "+15551234567".into(),
             display_name: Some("Me".into()),
             region: None,
+            ..Default::default()
         })
         .await
         .unwrap();
@@ -296,6 +297,7 @@ async fn rest_auth_and_error_mapping() {
             phone: "+15551234567".into(),
             display_name: None,
             region: None,
+            ..Default::default()
         })
         .await;
     assert!(matches!(bad, Err(AppError::InvalidCode { .. })), "{bad:?}");
@@ -310,6 +312,7 @@ async fn rest_auth_and_error_mapping() {
             phone: "+15551234567".into(),
             display_name: Some("Me".into()),
             region: None,
+            ..Default::default()
         })
         .await
         .unwrap();

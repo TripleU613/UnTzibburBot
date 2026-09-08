@@ -425,9 +425,16 @@ pub struct StartAuthRequest {
     /// ISO 3166-1 alpha-2.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// `kosher` | `android` | `ios` | `web` — required by the live server.
+    /// Filled from the client's [`crate::DeviceInfo`] when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    /// Device model string — required by the live server; filled from `DeviceInfo` when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_model: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyAuthRequest {
     pub challenge_id: String,
@@ -438,6 +445,11 @@ pub struct VerifyAuthRequest {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// See [`StartAuthRequest::platform`]; filled from `DeviceInfo` when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_model: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

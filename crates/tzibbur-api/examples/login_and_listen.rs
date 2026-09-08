@@ -66,6 +66,7 @@ async fn main() -> Result<()> {
                 phone,
                 display_name: name,
                 region: None,
+                ..Default::default()
             })
             .await?;
         println!(

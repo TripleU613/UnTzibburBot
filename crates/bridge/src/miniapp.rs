@@ -139,6 +139,7 @@ async fn api_start(
             phone: phone.clone(),
             display_name,
             region: None,
+            ..Default::default()
         })
         .await
         .map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
@@ -175,6 +176,7 @@ async fn api_verify(
             phone: parse_phone(&req.phone, &app.shared.cfg.default_region).unwrap_or(req.phone),
             display_name,
             region: None,
+            ..Default::default()
         })
         .await
         .map_err(|e| match e {

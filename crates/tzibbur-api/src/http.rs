@@ -396,14 +396,24 @@ impl TzibburClient {
 
     /// `POST /v1/auth/start` — triggers SMS OTP delivery. Unauthenticated.
     pub async fn start_auth(&self, req: &StartAuthRequest) -> Result<EnrollmentChallenge> {
-        self.post("v1/auth/start", req, false).await
+        let mut req = req.clone();
+        req.platform
+            .get_or_insert_with(|| self.inner.device.platform.clone());
+        req.device_model
+            .get_or_insert_with(|| self.inner.device.model.clone());
+        self.post("v1/auth/start", &req, false).await
     }
 
     /// `POST /v1/auth/verify` — exchanges the OTP for a session. Unauthenticated.
     ///
     /// On success the returned token is installed on this client.
     pub async fn verify_auth(&self, req: &VerifyAuthRequest) -> Result<Session> {
-        let s: Session = self.post("v1/auth/verify", req, false).await?;
+        let mut req = req.clone();
+        req.platform
+            .get_or_insert_with(|| self.inner.device.platform.clone());
+        req.device_model
+            .get_or_insert_with(|| self.inner.device.model.clone());
+        let s: Session = self.post("v1/auth/verify", &req, false).await?;
         self.set_token(Some(s.token.clone())).await;
         Ok(s)
     }

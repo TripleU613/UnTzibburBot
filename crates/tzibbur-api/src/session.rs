@@ -364,6 +364,7 @@ impl SessionManager {
                 phone: phone.to_owned(),
                 display_name: display_name.map(str::to_owned),
                 region: region.map(str::to_owned),
+                ..Default::default()
             })
             .await
     }

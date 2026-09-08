@@ -126,6 +126,7 @@ disagree, the wire wins and the app's spelling is still accepted:
 | `GET /v1/legal/{key}` | `{"document": {"key", "text", "checksum"}}`; unwrapped into `LegalDocument`. |
 | `POST /v1/contacts/check` | `{"registered": ["+1555…"]}` (plain E.164 strings). |
 | Problem `type` | Underscore slugs (`urn:tzibbur:error:validation_failed`, `not_found`); normalised to the app's hyphenated names before mapping. `errors` is an array of `{path, message}`. |
+| `POST /v1/auth/start` and `/verify` | Require `platform` (`kosher`\|`android`\|`ios`\|`web`) and `deviceModel` in the body (undocumented in the app dump). The client fills them from `DeviceInfo` (default `android` / `Pixel 7`). |
 | Users / members | Carry `kind: "person" | "service"` (the Tzibbur System sender is a `service`). |
 | Devices | `deviceModel`, `registeredAt`, `lastSeenAt`, `userId`, `imei`, `serialNumber`. |
 | WS `hello` | `{"protocolVersion": 1, "userId", "deviceId", "limits": {"heartbeatSeconds": 30, "maxConnectionsPerDevice": 3, "maxFrameBytes": 16384}}`, surfaced as `SocketEvent::Hello`. The server also sends WebSocket-level pings. |
