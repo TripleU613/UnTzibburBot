@@ -593,16 +593,21 @@ impl AccountRuntime {
         self.shared.store.set_conversation_name(conv.id, name).await
     }
 
-    /// Plain message to the user's private chat (no topic).
+    /// Notice to the user's 🏠 home topic.
     pub async fn notify_user(&self, text: &str, keyboard: Option<InlineKeyboardMarkup>) {
-        let mut req = self
+        let user = match self
             .shared
-            .bot
-            .send_message(ChatId(self.telegram_chat_id), text);
-        if let Some(k) = keyboard {
-            req = req.reply_markup(k);
-        }
-        if let Err(e) = req.await {
+            .store
+            .user_by_telegram_id(self.telegram_chat_id)
+            .await
+        {
+            Ok(Some(u)) => u,
+            _ => {
+                tracing::warn!(account = self.account_id, "notify: bridge user missing");
+                return;
+            }
+        };
+        if let Err(e) = send_home(&self.shared, &user, &format::escape_html(text), keyboard).await {
             tracing::warn!(account = self.account_id, error = %e, "notify failed");
         }
     }
@@ -803,6 +808,92 @@ fn is_missing_thread(e: &teloxide::RequestError) -> bool {
         || s.contains("topic_deleted")
         || s.contains("message thread not found")
         || s.contains("topic not found")
+}
+
+// ---------------------------------------------------------------------------
+// Home topic
+// ---------------------------------------------------------------------------
+
+pub const HOME_TOPIC_NAME: &str = "🏠 Tzibbur";
+
+/// Get or create the user's control topic ("🏠 Tzibbur"), where onboarding,
+/// commands and notices live. `None` when the bot has no topic mode.
+pub async fn ensure_home_topic(
+    shared: &Shared,
+    user: &crate::store::BridgeUser,
+) -> Option<ThreadId> {
+    if let Some(t) = user.home_topic_id() {
+        return Some(ThreadId(MessageId(t)));
+    }
+    if !shared.bot_topics_enabled.load(Ordering::Relaxed) {
+        return None;
+    }
+    let chat: i64 = user.telegram_user_id.parse().ok()?;
+    match shared
+        .bot
+        .create_forum_topic(ChatId(chat), HOME_TOPIC_NAME)
+        .await
+    {
+        Ok(t) => {
+            if let Err(e) = shared
+                .store
+                .set_home_topic(user.id, Some(t.thread_id.0 .0))
+                .await
+            {
+                tracing::warn!(error = %e, "could not persist home topic");
+            }
+            let _ = shared
+                .bot
+                .send_message(
+                    ChatId(chat),
+                    "This is your <b>🏠 Tzibbur</b> topic: commands, sign-in and notices happen here. Each of your Tzibbur groups gets its own topic next to it.",
+                )
+                .parse_mode(ParseMode::Html)
+                .message_thread_id(t.thread_id)
+                .await;
+            Some(t.thread_id)
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "could not create home topic");
+            None
+        }
+    }
+}
+
+/// Send an HTML control message to the user's home topic (falls back to the chat
+/// root). Recreates the home topic once if it was deleted.
+pub async fn send_home(
+    shared: &Shared,
+    user: &crate::store::BridgeUser,
+    html: &str,
+    keyboard: Option<InlineKeyboardMarkup>,
+) -> Result<Message> {
+    let chat = ChatId(user.telegram_user_id.parse::<i64>()?);
+    let thread = ensure_home_topic(shared, user).await;
+    let build = |thread: Option<ThreadId>| {
+        let mut req = shared
+            .bot
+            .send_message(chat, html.to_owned())
+            .parse_mode(ParseMode::Html);
+        if let Some(t) = thread {
+            req = req.message_thread_id(t);
+        }
+        if let Some(k) = keyboard.clone() {
+            req = req.reply_markup(k);
+        }
+        req
+    };
+    match build(thread).await {
+        Ok(m) => Ok(m),
+        Err(e) if thread.is_some() && is_missing_thread(&e) => {
+            let _ = shared.store.set_home_topic(user.id, None).await;
+            let mut fresh = user.clone();
+            fresh.settings = None;
+            let thread = ensure_home_topic(shared, &fresh).await;
+            Ok(build(thread).await?)
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 // ---------------------------------------------------------------------------

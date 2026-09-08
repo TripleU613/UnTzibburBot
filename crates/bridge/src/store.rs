@@ -73,6 +73,20 @@ pub struct BridgeUser {
     pub settings: Option<Value>,
 }
 
+impl BridgeUser {
+    /// Thread id of the user's "🏠 Tzibbur" control topic, if created.
+    pub fn home_topic_id(&self) -> Option<i32> {
+        self.settings
+            .as_ref()
+            .and_then(|s| s.get("home_topic_id"))
+            .and_then(|v| {
+                v.as_i64()
+                    .or_else(|| v.as_str().and_then(|x| x.parse().ok()))
+            })
+            .map(|v| v as i32)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccountStatus {
@@ -249,6 +263,29 @@ impl Store {
             )
             .await
             .context("create user")
+    }
+
+    pub async fn set_home_topic(&self, user_id: i64, topic_id: Option<i32>) -> Result<()> {
+        let current: Option<BridgeUser> = self.d.get(&self.n.users, user_id).await?;
+        let mut settings = current
+            .and_then(|u| u.settings)
+            .unwrap_or_else(|| json!({}));
+        if !settings.is_object() {
+            settings = json!({});
+        }
+        settings["home_topic_id"] = match topic_id {
+            Some(t) => json!(t),
+            None => Value::Null,
+        };
+        let _: Value = self
+            .d
+            .update(
+                &self.n.users,
+                user_id,
+                &json!({"settings": settings, "updated_at": now()}),
+            )
+            .await?;
+        Ok(())
     }
 
     pub async fn user(&self, id: i64) -> Result<Option<BridgeUser>> {
