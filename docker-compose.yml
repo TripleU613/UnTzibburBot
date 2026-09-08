@@ -24,7 +24,8 @@ services:
       db:
         condition: service_healthy
     ports:
-      - "${DIRECTUS_PORT:-8055}:8055"
+      # Admin UI only; keep it off the public interface. Default binds to loopback.
+      - "${DIRECTUS_BIND:-127.0.0.1}:${DIRECTUS_PORT:-8055}:8055"
     environment:
       SECRET: ${DIRECTUS_SECRET:?set DIRECTUS_SECRET in .env}
       DB_CLIENT: pg
@@ -56,8 +57,10 @@ services:
     depends_on:
       directus:
         condition: service_healthy
-    ports:
-      - "${BRIDGE_PORT:-8080}:8080"
+    # No published port by default: the bot long-polls Telegram. Set BRIDGE_PUBLIC_URL and put a
+    # reverse proxy in front of the container's :8080 to enable webhook mode + the Mini App.
+    expose:
+      - "8080"
     environment:
       TELOXIDE_TOKEN: ${TELOXIDE_TOKEN:?set TELOXIDE_TOKEN in .env}
       DIRECTUS_URL: http://directus:8055
@@ -67,9 +70,13 @@ services:
       BRIDGE_PUBLIC_URL: ${BRIDGE_PUBLIC_URL:-}
       BRIDGE_HISTORY_IMPORT: ${BRIDGE_HISTORY_IMPORT:-20}
       TZIBBUR_BASE_URL: ${TZIBBUR_BASE_URL:-https://api.tzibbur.me}
+      BRIDGE_DEFAULT_REGION: ${BRIDGE_DEFAULT_REGION:-US}
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - bridge_data:/data
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
 
 volumes:
   db:

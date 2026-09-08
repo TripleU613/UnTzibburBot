@@ -64,7 +64,7 @@ pub async fn card(
         escape_html(&g.category),
         g.member_count,
         if is_admin { "an admin" } else { "a member" },
-        if g.muted { " · 🔕 muted" } else { "" }
+        if g.muted { " · muted" } else { "" }
     );
     if g.kind == GroupKind::System {
         text.push_str("System announcements thread — read-only.\n");
@@ -81,7 +81,7 @@ pub async fn card(
         text.push('\n');
         if g.member_count < min_members {
             text.push_str(&format!(
-                "\n⚠️ Tzibbur requires <b>{min_members}</b> members before anyone can post here. Add {} more with <b>Add members</b>.\n",
+                "\nTzibbur requires <b>{min_members}</b> members before anyone can post here. Add {} more with <b>Add members</b>.\n",
                 min_members - g.member_count
             ));
         }
@@ -90,38 +90,38 @@ pub async fn card(
     let c = conv.id;
     let mut rows: Vec<Vec<InlineKeyboardButton>> = vec![];
     if g.kind != GroupKind::System {
-        let mut row = vec![btn("👥 Members", format!("g:{c}:members"))];
+        let mut row = vec![btn("Members", format!("g:{c}:members"))];
         if g.can_add_members() {
-            row.push(btn("➕ Add members", format!("g:{c}:add")));
+            row.push(btn("Add members", format!("g:{c}:add")));
         }
         rows.push(row);
         if is_admin {
-            rows.push(vec![btn("✏️ Rename", format!("g:{c}:rename"))]);
+            rows.push(vec![btn("Rename", format!("g:{c}:rename"))]);
             rows.push(vec![
                 btn(
-                    format!("Post: {} ⇄", perm_label(&g.who_can_post)),
+                    format!("Post: {} ", perm_label(&g.who_can_post)),
                     format!("g:{c}:post"),
                 ),
                 btn(
-                    format!("Add: {} ⇄", perm_label(&g.who_can_add_members)),
+                    format!("Add: {} ", perm_label(&g.who_can_add_members)),
                     format!("g:{c}:addm"),
                 ),
             ]);
         }
     }
     let mut row = vec![
-        btn("✅ Mark read", format!("g:{c}:read")),
+        btn("Mark read", format!("g:{c}:read")),
         btn(
-            if g.muted { "🔔 Unmute" } else { "🔕 Mute" },
+            if g.muted { "Unmute" } else { "Mute" },
             format!("g:{c}:mute"),
         ),
     ];
     if g.kind != GroupKind::System {
-        row.push(btn("🚪 Leave", format!("g:{c}:leave")));
+        row.push(btn("Leave", format!("g:{c}:leave")));
     }
     rows.push(row);
     if is_admin && g.kind != GroupKind::System {
-        rows.push(vec![btn("🗑 Delete group…", format!("g:{c}:del1"))]);
+        rows.push(vec![btn("Delete group…", format!("g:{c}:del1"))]);
     }
     rows.push(vec![btn("Close", "noop")]);
     Ok((text, InlineKeyboardMarkup::new(rows)))
@@ -146,7 +146,7 @@ pub async fn members_view(
     );
     let mut rows = vec![];
     for m in &members {
-        let role = if m.role == Role::Admin { " ⭐" } else { "" };
+        let role = if m.role == Role::Admin { " " } else { "" };
         let you = if m.user_id == rt.tzibbur_user_id {
             " (you)"
         } else {
@@ -180,7 +180,7 @@ pub async fn members_view(
         text.push_str("\nTap a member to promote, demote or remove.");
     }
     rows.push(vec![
-        btn("⬅️ Back", format!("g:{}:card", conv.id)),
+        btn("Back", format!("g:{}:card", conv.id)),
         btn("Close", "noop"),
     ]);
     Ok((text, InlineKeyboardMarkup::new(rows)))
@@ -195,15 +195,15 @@ fn member_menu(
     let c = conv.id;
     let mut rows = vec![];
     match role {
-        Role::Admin => rows.push(vec![btn("⬇️ Make member", format!("ma:{c}:{user_id}:m"))]),
-        Role::Member => rows.push(vec![btn("⭐ Make admin", format!("ma:{c}:{user_id}:a"))]),
+        Role::Admin => rows.push(vec![btn("Make member", format!("ma:{c}:{user_id}:m"))]),
+        Role::Member => rows.push(vec![btn("Make admin", format!("ma:{c}:{user_id}:a"))]),
     }
     rows.push(vec![btn(
-        "➖ Remove from group",
+        "Remove from group",
         format!("ma:{c}:{user_id}:r"),
     )]);
     rows.push(vec![
-        btn("⬅️ Back", format!("g:{c}:members")),
+        btn("Back", format!("g:{c}:members")),
         btn("Close", "noop"),
     ]);
     (
@@ -357,7 +357,7 @@ pub async fn on_callback(
                 }
                 "leave" => {
                     let kb = InlineKeyboardMarkup::new(vec![vec![
-                        btn("🚪 Yes, leave", format!("leave:{conv_id}")),
+                        btn("Yes, leave", format!("leave:{conv_id}")),
                         btn("Cancel", format!("g:{conv_id}:card")),
                     ]]);
                     edit_or_send(
@@ -376,7 +376,7 @@ pub async fn on_callback(
                 }
                 "del1" => {
                     let kb = InlineKeyboardMarkup::new(vec![vec![
-                        btn("🗑 Delete for everyone", format!("g:{conv_id}:del2")),
+                        btn("Delete for everyone", format!("g:{conv_id}:del2")),
                         btn("Cancel", format!("g:{conv_id}:card")),
                     ]]);
                     edit_or_send(
@@ -468,7 +468,7 @@ pub async fn on_rename(
                     reply(
                         &bot,
                         &msg,
-                        format!("✏️ Renamed to <b>{}</b>.", escape_html(&text)),
+                        format!("Renamed to <b>{}</b>.", escape_html(&text)),
                     )
                     .await
                 }

@@ -266,7 +266,7 @@ impl AccountRuntime {
                 ) {
                     if conv.name.as_deref() != Some(g.name.as_str()) {
                         self.rename_topic(&conv, &g.name).await?;
-                        self.send_note(&conv, &format!("✏️ Group renamed to “{}”", g.name))
+                        self.send_note(&conv, &format!("Group renamed to “{}”", g.name))
                             .await
                             .ok();
                     }
@@ -280,7 +280,7 @@ impl AccountRuntime {
                     .await?
                 {
                     if !conv.closed {
-                        self.send_note(&conv, "🚫 This group was deleted or you were removed from it. The topic is now closed.")
+                        self.send_note(&conv, "This group was deleted or you were removed from it. The topic is now closed.")
                             .await
                             .ok();
                         if let Some(t) = conv.topic_id() {
@@ -302,7 +302,7 @@ impl AccountRuntime {
             }
             SyncEvent::UpdateRequired => {
                 self.notify_user(
-                    "⚠️ Tzibbur says this client version is no longer supported. The bridge needs an update before it can reconnect.",
+                    "Tzibbur says this client version is no longer supported. The bridge needs an update before it can reconnect.",
                     None,
                 )
                 .await;
@@ -323,9 +323,7 @@ impl AccountRuntime {
                     } else {
                         member.display_name.clone()
                     };
-                    self.send_note(&conv, &format!("➕ {who} joined"))
-                        .await
-                        .ok();
+                    self.send_note(&conv, &format!("{who} joined")).await.ok();
                 }
                 self.retry_too_small(&group_id).await;
             }
@@ -344,7 +342,7 @@ impl AccountRuntime {
                     .await?
                 {
                     let who = display_name.unwrap_or_else(|| "A member".into());
-                    self.send_note(&conv, &format!("➖ {who} left")).await.ok();
+                    self.send_note(&conv, &format!("{who} left")).await.ok();
                 }
             }
             SyncEvent::RoleChanged {
@@ -366,7 +364,7 @@ impl AccountRuntime {
                     };
                     let what = match role {
                         Role::Admin => format!(
-                            "⭐ {who} {} now an admin",
+                            "{who} {} now an admin",
                             if who == "You" { "are" } else { "is" }
                         ),
                         Role::Member => format!(
@@ -467,7 +465,7 @@ impl AccountRuntime {
         if !history.is_empty() {
             self.send_note(
                 &conv,
-                &format!("🕘 Importing the last {} message(s)…", history.len()),
+                &format!("Importing the last {} message(s)…", history.len()),
             )
             .await
             .ok();
@@ -686,10 +684,14 @@ impl AccountRuntime {
             .set_account_status(self.account_id, AccountStatus::ReauthRequired)
             .await;
         let kb = InlineKeyboardMarkup::new(vec![vec![InlineKeyboardButton::callback(
-            "🔄 Reconnect",
+            "Reconnect",
             "reconnect",
         )]]);
-        self.notify_user("⚠️ Your Tzibbur session expired or was revoked. Messages are paused until you reconnect.", Some(kb)).await;
+        self.notify_user(
+            "Your Tzibbur session expired or was revoked. Messages are paused until you reconnect.",
+            Some(kb),
+        )
+        .await;
         self.sync.stop().await;
     }
 
@@ -721,7 +723,7 @@ impl AccountRuntime {
             .leave_group(&conv.group_id)
             .await
             .map_err(anyhow::Error::new)?;
-        self.send_note(conv, "🚪 You left this group.").await.ok();
+        self.send_note(conv, "You left this group.").await.ok();
         if let Some(t) = conv.topic_id() {
             let _ = self
                 .shared
@@ -820,7 +822,7 @@ impl AccountRuntime {
             .delete_group(&conv.group_id)
             .await
             .map_err(anyhow::Error::new)?;
-        self.send_note(conv, "🗑 Group deleted.").await.ok();
+        self.send_note(conv, "Group deleted.").await.ok();
         if let Some(t) = conv.topic_id() {
             let _ = self
                 .shared
@@ -881,7 +883,7 @@ impl AccountRuntime {
         {
             self.send_note(
                 &conv,
-                "📨 The group is big enough now — resending your earlier message(s).",
+                "The group is big enough now — resending your earlier message(s).",
             )
             .await
             .ok();
@@ -1002,7 +1004,7 @@ impl AccountRuntime {
                             .bot
                             .send_message(
                                 ChatId(self.telegram_chat_id),
-                                format!("❌ Not delivered: {reason}."),
+                                format!("Not delivered: {reason}."),
                             )
                             .reply_parameters(teloxide::types::ReplyParameters::new(MessageId(tg)));
                         if let Some(t) = conv.topic_id() {
@@ -1067,7 +1069,7 @@ pub async fn send_home(
     Ok(req.await?)
 }
 
-/// Earlier builds created a "🏠 Tzibbur" topic per user; delete any that remain.
+/// Earlier builds created a "Tzibbur" topic per user; delete any that remain.
 pub async fn remove_legacy_home_topics(shared: &Shared) {
     let users = match shared.store.users_with_home_topic().await {
         Ok(u) => u,

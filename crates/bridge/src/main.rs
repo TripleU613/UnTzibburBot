@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
     let topics_enabled = raw_has_topics_enabled(&cfg.telegram_token).await;
     tracing::info!(bot = %me.username(), topics_enabled, "telegram ready");
     if !topics_enabled {
-        tracing::warn!("Topic mode is OFF for this bot. Enable it in @BotFather → Bot Settings → Threaded Mode, or groups arrive as flat messages.");
+        tracing::warn!("Topic mode is OFF for this bot. Enable it in @BotFather Bot Settings Threaded Mode, or groups arrive as flat messages.");
     }
 
     let shared = Arc::new(Shared {

@@ -27,11 +27,11 @@ async fn main() {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             _ = tokio::time::sleep(Duration::from_secs(25)) , if last_ping.elapsed() > Duration::from_secs(25) => {
-                let _ = sink.send(Message::Text(r#"{"type":"ping"}"#.into())).await; last_ping = tokio::time::Instant::now(); println!("-> ping");
+                let _ = sink.send(Message::Text(r#"{"type":"ping"}"#.to_owned())).await; last_ping = tokio::time::Instant::now(); println!("-> ping");
             }
             m = stream.next() => match m {
                 Some(Ok(Message::Text(t))) => println!("{} <- {}", chrono::Utc::now().format("%H:%M:%S"), t.chars().take(600).collect::<String>()),
-                Some(Ok(Message::Ping(_))) => { let _ = sink.send(Message::Pong(vec![].into())).await; println!("<- ws-ping (ponged)"); }
+                Some(Ok(Message::Ping(_))) => { let _ = sink.send(Message::Pong(vec![])).await; println!("<- ws-ping (ponged)"); }
                 Some(Ok(Message::Close(c))) => { println!("<- close {c:?}"); break; }
                 Some(Ok(other)) => println!("<- {other:?}"),
                 Some(Err(e)) => { println!("!! {e}"); break; }

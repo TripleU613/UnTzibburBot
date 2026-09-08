@@ -15,59 +15,59 @@ use teloxide::types::{BotCommand, MenuButton, WebAppInfo};
 use teloxide::utils::command::BotCommands;
 
 #[derive(BotCommands, Clone, Debug)]
-#[command(rename_rule = "lowercase", description = "Tzibbur ↔ Telegram bridge")]
+#[command(rename_rule = "lowercase", description = "Commands")]
 pub enum Command {
-    #[command(description = "welcome & status")]
+    #[command(description = "Welcome and status")]
     Start,
-    #[command(description = "connect your Tzibbur account (phone + SMS code)")]
+    #[command(description = "Connect your Tzibbur account")]
     Connect,
-    #[command(description = "reconnect after your session expired")]
+    #[command(description = "Sign in again after your session expired")]
     Reconnect,
-    #[command(description = "list your groups and unread counts")]
+    #[command(description = "List your groups")]
     Chats,
-    #[command(description = "create a new Tzibbur group")]
+    #[command(description = "Create a Tzibbur group")]
     NewGroup,
-    #[command(description = "group card: info, members, permissions, rename, leave, delete")]
+    #[command(description = "Manage the group of this topic")]
     Group,
-    #[command(description = "add members to the group of the current topic (phone numbers)")]
+    #[command(description = "Add members to this group by phone number")]
     Add(String),
-    #[command(description = "rename the group of the current topic")]
+    #[command(description = "Rename this group")]
     Rename(String),
-    #[command(description = "remove a member / change roles (pick from a list)")]
+    #[command(description = "Members: promote, demote, remove")]
     Manage,
-    #[command(description = "delete the group of the current topic (admins, two-step)")]
+    #[command(description = "Delete this group (admins)")]
     DeleteGroup,
-    #[command(description = "mark the current group read on Tzibbur")]
+    #[command(description = "Mark this group read")]
     Read,
-    #[command(description = "check which phone numbers are on Tzibbur")]
+    #[command(description = "Check which phone numbers are on Tzibbur")]
     Contacts(String),
-    #[command(description = "list your Tzibbur devices")]
+    #[command(description = "List your Tzibbur devices")]
     Devices,
-    #[command(description = "show members of the group of the current topic")]
+    #[command(description = "Show members of this group")]
     Members,
-    #[command(description = "leave the group of the current topic")]
+    #[command(description = "Leave this group")]
     Leave,
-    #[command(description = "mute/unmute the group of the current topic")]
+    #[command(description = "Mute or unmute this group")]
     Mute,
-    #[command(description = "change your Tzibbur display name")]
+    #[command(description = "Change your Tzibbur display name")]
     Name(String),
-    #[command(description = "bridge settings")]
+    #[command(description = "Settings")]
     Settings,
-    #[command(description = "connection status")]
+    #[command(description = "Connection status")]
     Status,
-    #[command(description = "force a sync now")]
+    #[command(description = "Sync now")]
     Sync,
-    #[command(description = "disconnect and remove your session")]
+    #[command(description = "Disconnect and remove your session")]
     Disconnect,
-    #[command(description = "support the bridge with Telegram Stars")]
+    #[command(description = "Support the project with Telegram Stars")]
     Donate,
-    #[command(description = "Tzibbur terms & privacy policy")]
+    #[command(description = "Tzibbur terms and privacy policy")]
     Legal,
-    #[command(description = "what this bridge stores and who can see what")]
+    #[command(description = "What this bot stores")]
     Privacy,
-    #[command(description = "cancel the current action")]
+    #[command(description = "Cancel the current action")]
     Cancel,
-    #[command(description = "this help")]
+    #[command(description = "List commands")]
     Help,
 }
 
@@ -150,12 +150,14 @@ pub async fn setup_bot_profile(bot: &BridgeBot, app: &App) -> Result<()> {
     let cmds: Vec<BotCommand> = Command::bot_commands();
     bot.set_my_commands(cmds).await?;
     bot.set_my_short_description()
-        .short_description("Your Tzibbur groups as Telegram topics. Read and reply from Telegram.")
+        .short_description(
+            "A Telegram client for Tzibbur: your groups as topics, read and reply here.",
+        )
         .await
         .ok();
     bot.set_my_description()
         .description(
-            "This bot mirrors your Tzibbur groups into topics in this chat, so you can read and reply from Telegram.\n\nTap Start, then /connect with your phone number. Tzibbur stays the source of truth; the bridge stores only ids and an encrypted session.",
+            "A Telegram client for Tzibbur.\n\nEach Tzibbur group you belong to becomes a topic in your chat with this bot. Read there, reply there; new groups appear on their own.\n\nSend /connect to sign in with your phone number. The bot stores only ids and an encrypted session, never message text. Open source.",
         )
         .await
         .ok();

@@ -43,9 +43,9 @@ async fn main() {
                     let ty = t.split("\"type\":\"").nth(1).unwrap_or("").split('"').next().unwrap_or("").to_owned();
                     let seqs: Vec<&str> = t.match_indices("\"seq\":").map(|(i, _)| t[i + 6..].split(|c: char| !c.is_ascii_digit()).next().unwrap_or("")).collect();
                     println!("<- {ty} seqs={seqs:?}");
-                    if !acked { if let Some((g, s)) = &ack { let f = format!(r#"{{"type":"ack","groupId":"{g}","seq":{s}}}"#); sink.send(Message::Text(f.clone().into())).await.unwrap(); println!("-> {f}"); acked = true; } }
+                    if !acked { if let Some((g, s)) = &ack { let f = format!(r#"{{"type":"ack","groupId":"{g}","seq":{s}}}"#); sink.send(Message::Text(f.clone())).await.unwrap(); println!("-> {f}"); acked = true; } }
                 }
-                Some(Ok(Message::Ping(_))) => { let _ = sink.send(Message::Pong(vec![].into())).await; }
+                Some(Ok(Message::Ping(_))) => { let _ = sink.send(Message::Pong(vec![])).await; }
                 Some(Ok(Message::Close(c))) => { println!("<- close {c:?}"); break; }
                 Some(Err(e)) => { println!("!! {e}"); break; }
                 _ => {}

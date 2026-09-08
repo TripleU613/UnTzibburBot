@@ -55,6 +55,14 @@ Directus UI: http://localhost:8055.
 
 Without Docker: `cargo run -p tzibbur-telegram-bridge` with the same variables exported.
 
+## Deploying (how the public bot runs)
+
+`.github/workflows/deploy.yml` builds the image on GitHub, pushes it to GHCR, joins the
+tailnet with a `tag:ci` auth key (`TS_AUTHKEY`, the only GitHub secret) and runs
+`docker compose pull && up -d` on the host over Tailscale SSH. The host keeps its own
+`.env` (mode 600) and data volumes; the workflow never reads or writes secrets.
+`docker-compose.prod.yml` swaps the local build for the published image.
+
 ## Configuration
 
 | Variable | Meaning |

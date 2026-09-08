@@ -473,7 +473,7 @@ fn schema(prefix: &str) -> Vec<CollectionSpec> {
         },
         CollectionSpec {
             name: n.conversations.clone(),
-            note: "Tzibbur group ↔ Telegram topic mapping (one per account × group)",
+            note: "Tzibbur group Telegram topic mapping (one per account × group)",
             fields: vec![
                 fk("account"),
                 s("group_id"),

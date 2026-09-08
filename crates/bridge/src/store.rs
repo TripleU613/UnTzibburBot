@@ -74,7 +74,7 @@ pub struct BridgeUser {
 }
 
 impl BridgeUser {
-    /// Thread id of the user's "🏠 Tzibbur" control topic, if created.
+    /// Thread id of the user's "Tzibbur" control topic, if created.
     pub fn home_topic_id(&self) -> Option<i32> {
         self.settings
             .as_ref()

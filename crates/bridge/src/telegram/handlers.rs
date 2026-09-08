@@ -75,6 +75,15 @@ fn send_in(
     r
 }
 
+/// Show "typing" while a Tzibbur round-trip runs.
+async fn typing(bot: &BridgeBot, chat: ChatId, thread: Option<ThreadId>) {
+    let mut r = bot.send_chat_action(chat, teloxide::types::ChatAction::Typing);
+    if let Some(t) = thread {
+        r = r.message_thread_id(t);
+    }
+    let _ = r.await;
+}
+
 async fn say(bot: &BridgeBot, msg: &Message, app: &App, text: impl Into<String>) -> Result<()> {
     let thread = thread_for(app, msg).await;
     send_in(bot, msg.chat.id, thread, text).await?;
@@ -228,26 +237,27 @@ async fn on_command_inner(
         return Ok(());
     }
     tidy_stray_thread(&bot, &app, &msg).await;
+    typing(&bot, msg.chat.id, thread_for(&app, &msg).await).await;
     match cmd {
         Command::Start => {
             app.bridge_user(&tg).await?;
             let account = app.account_for(tg.id.0 as i64).await?;
             let text = match account {
                 Some(a) if a.status == AccountStatus::Connected => format!(
-                    "👋 Welcome back, <b>{}</b>. Your Tzibbur groups are mirrored as topics in this chat. Reply inside a topic to post to the group.\n\n/chats · /newgroup · /settings · /help",
+                    "Signed in as <b>{}</b>. Your Tzibbur groups are the topics in this chat; reply inside a topic to post to that group.\n\nUseful: /chats, /newgroup, /group (inside a topic), /settings, /help",
                     escape_html(a.display_name.as_deref().unwrap_or("friend"))
                 ),
                 Some(a) if a.status == AccountStatus::ReauthRequired => {
-                    "⚠️ Your Tzibbur session expired. Use /reconnect to sign in again; your topics will be reused.".to_owned()
+                    "Your Tzibbur session expired. Use /reconnect to sign in again; your topics will be reused.".to_owned()
                 }
                 _ => format!(
-                    "👋 <b>Tzibbur ↔ Telegram</b>\n\nI turn each of your Tzibbur groups into a topic in this chat, so you can read and reply from Telegram. This main thread is the command center.\n\n• Tzibbur stays the source of truth; I keep only ids and an encrypted session.\n• Messages are plain text (that's all Tzibbur supports).\n\nTap <b>/connect</b> to sign in with your phone number{}. See /privacy for what is (and isn't) stored.",
+                    "<b>Tzibbur for Telegram</b>\n\nThis bot is a Telegram client for Tzibbur. Each of your Tzibbur groups appears as a topic in this chat; read and reply here and the message goes to the group.\n\nTzibbur remains the source of truth. The bot keeps only ids and an encrypted session, never message text. See /privacy.\n\nTap Connect or send /connect to sign in with your phone number{}.",
                     if app.shared.cfg.public_url.is_some() { ", or use the ≡ menu button for the secure login page" } else { "" }
                 ),
             };
             let mut r = send_in(&bot, msg.chat.id, thread_for(&app, &msg).await, text);
             if app.account_for(tg.id.0 as i64).await?.is_none() {
-                r = r.reply_markup(kb(vec![vec![("🔗 Connect Tzibbur", "connect".into())]]));
+                r = r.reply_markup(kb(vec![vec![("Connect Tzibbur", "connect".into())]]));
             }
             r.await?;
         }
@@ -263,7 +273,7 @@ async fn on_command_inner(
                     say_kb(&bot, &msg, &app,
                         "Disconnect your Tzibbur account from Telegram?\n\n<b>Disconnect</b> stops forwarding and deletes the stored session but keeps the topic mappings for an easy reconnect.\n<b>Disconnect &amp; erase</b> also removes all mappings.",
                         kb(vec![
-                            vec![("🔌 Disconnect", "disc:keep".into()), ("🗑 Disconnect & erase", "disc:purge".into())],
+                            vec![("Disconnect", "disc:keep".into()), ("Disconnect & erase", "disc:purge".into())],
                             vec![("Cancel", "noop".into())],
                         ]),
                     )
@@ -295,7 +305,7 @@ async fn on_command_inner(
         Command::Sync => {
             let rt = connected_runtime(&app, &tg).await?;
             match rt.sync_refresh().await {
-                Ok(()) => say(&bot, &msg, &app, "🔄 Synced.").await?,
+                Ok(()) => say(&bot, &msg, &app, "Synced.").await?,
                 Err(e) => say(&bot, &msg, &app, format!("Sync failed: {}", escape_html(&friendly(&e)))).await?,
             }
         }
@@ -308,7 +318,7 @@ async fn on_command_inner(
                 let mut out = String::from("<b>Your Tzibbur groups</b>\n");
                 for r in rows {
                     let unread = if r.unread_count > 0 { format!(" · {} unread", r.unread_count) } else { String::new() };
-                    let muted = if r.group.muted { " 🔕" } else { "" };
+                    let muted = if r.group.muted { " " } else { "" };
                     out.push_str(&format!(
                         "• {}{} — {} member(s){}\n",
                         escape_html(&r.group.name),
@@ -348,7 +358,7 @@ async fn on_command_inner(
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
             match validate_group_name(&arg) {
                 TextValidation::Valid { text } => match rt.rename_group(&conv, &text).await {
-                    Ok(()) => say(&bot, &msg, &app, format!("✏️ Renamed to <b>{}</b>.", escape_html(&text))).await?,
+                    Ok(()) => say(&bot, &msg, &app, format!("Renamed to <b>{}</b>.", escape_html(&text))).await?,
                     Err(e) => say(&bot, &msg, &app, format!("Could not rename: {}", escape_html(&e.to_string()))).await?,
                 },
                 TextValidation::Empty => {
@@ -374,7 +384,7 @@ async fn on_command_inner(
                     &msg,
                     &app,
                     format!("Delete <b>{}</b> for all members? This cannot be undone.", escape_html(&g.name)),
-                    kb(vec![vec![("🗑 Delete for everyone", format!("g:{}:del2", conv.id)), ("Cancel", "noop".into())]]),
+                    kb(vec![vec![("Delete for everyone", format!("g:{}:del2", conv.id)), ("Cancel", "noop".into())]]),
                 )
                 .await?;
             }
@@ -382,7 +392,7 @@ async fn on_command_inner(
         Command::Read => {
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
             let seq = rt.mark_read(&conv).await?;
-            say(&bot, &msg, &app, if seq > 0 { "✅ Marked read on Tzibbur." } else { "Nothing to mark." }).await?;
+            say(&bot, &msg, &app, if seq > 0 { "Marked read on Tzibbur." } else { "Nothing to mark." }).await?;
         }
         Command::Contacts(arg) => {
             let rt = connected_runtime(&app, &tg).await?;
@@ -397,10 +407,10 @@ async fn on_command_inner(
                     let off: Vec<String> = phones.iter().filter(|p| !on.contains(p)).cloned().collect();
                     let mut out = String::new();
                     if !on.is_empty() {
-                        out.push_str(&format!("✅ On Tzibbur: {}\n", escape_html(&on.join(", "))));
+                        out.push_str(&format!("On Tzibbur: {}\n", escape_html(&on.join(", "))));
                     }
                     if !off.is_empty() {
-                        out.push_str(&format!("❌ Not on Tzibbur: {}\n", escape_html(&off.join(", "))));
+                        out.push_str(&format!("Not on Tzibbur: {}\n", escape_html(&off.join(", "))));
                     }
                     if !bad.is_empty() {
                         out.push_str(&format!("Skipped (not valid numbers): {}", escape_html(&bad.join(", "))));
@@ -446,7 +456,7 @@ async fn on_command_inner(
             let (_rt, conv) = topic_context(&app, &tg, &msg).await?;
             say_kb(&bot, &msg, &app,
                 format!("Leave <b>{}</b>?", escape_html(conv.name.as_deref().unwrap_or("this group"))),
-                kb(vec![vec![("🚪 Leave", format!("leave:{}", conv.id)), ("Cancel", "noop".into())]]),
+                kb(vec![vec![("Leave", format!("leave:{}", conv.id)), ("Cancel", "noop".into())]]),
             )
             .await?;
         }
@@ -454,7 +464,7 @@ async fn on_command_inner(
             let (rt, conv) = topic_context(&app, &tg, &msg).await?;
             let g = rt.local().get_group(&conv.group_id)?.ok_or_else(|| anyhow!("group not cached"))?;
             rt.local().set_muted(&g.id, !g.muted)?;
-            say(&bot, &msg, &app, if g.muted { "🔔 Unmuted (bridge-local flag)." } else { "🔕 Muted (bridge-local flag)." }).await?;
+            say(&bot, &msg, &app, if g.muted { "Unmuted (bridge-local flag)." } else { "Muted (bridge-local flag)." }).await?;
         }
         Command::Name(name) => {
             let rt = connected_runtime(&app, &tg).await?;
@@ -481,7 +491,7 @@ async fn on_command_inner(
             bot.send_invoice(
                 msg.chat.id,
                 "Support the Tzibbur bridge",
-                "Keeps the servers running. Thank you! ⭐",
+                "Keeps the servers running. Thank you! ",
                 "donation:50",
                 "XTR",
                 prices,
@@ -520,7 +530,7 @@ pub const PRIVACY_TEXT: &str = "<b>What this bridge keeps, and who can see it</b
 • Nothing about you is logged beyond ids and error codes.";
 
 fn settings_kb(s: &AccountSettings) -> InlineKeyboardMarkup {
-    let on = |b: bool| if b { "✅" } else { "⬜" };
+    let on = |b: bool| if b { "[on]" } else { "[off]" };
     kb(vec![
         vec![(
             &format!("{} Auto-create topics for new groups", on(s.auto_topics)),
@@ -589,7 +599,7 @@ pub fn format_add_failures(failed: &[(String, String)]) -> String {
     if failed.is_empty() {
         return String::new();
     }
-    let mut s = String::from("⚠️ Refused by Tzibbur: ");
+    let mut s = String::from("Refused by Tzibbur: ");
     s.push_str(
         &failed
             .iter()
@@ -613,7 +623,7 @@ pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> Strin
         .collect();
     let mut s = String::new();
     if !added.is_empty() {
-        s.push_str(&format!("✅ Added: {}\n", added.join(", ")));
+        s.push_str(&format!("Added: {}\n", added.join(", ")));
     }
     if !out.already_member.is_empty() {
         s.push_str(&format!(
@@ -623,7 +633,7 @@ pub fn format_add_outcome(out: &tzibbur_api::models::AddMembersOutcome) -> Strin
     }
     if !out.not_found.is_empty() {
         s.push_str(&format!(
-            "❌ Not on Tzibbur: {}\n",
+            "Not on Tzibbur: {}\n",
             escape_html(&out.not_found.join(", "))
         ));
     }
@@ -715,7 +725,7 @@ pub async fn send_phone_prompt(
     app: &App,
 ) -> Result<()> {
     let mut text = format!(
-        "📱 Type your phone number any way you like — <code>212-736-5000</code>, <code>+972 50 123 4567</code>… (numbers without a country code are treated as {}). If Telegram shows a “📱 Use my Telegram number” button, you can tap that instead.\n\nTzibbur will text you a 6-digit code. I never store the code, only the resulting session (encrypted).",
+        "Type your phone number any way you like — <code>212-736-5000</code>, <code>+972 50 123 4567</code>… (numbers without a country code are treated as {}). If Telegram shows a “Use my Telegram number” button, you can tap that instead.\n\nTzibbur will text you a 6-digit code. I never store the code, only the resulting session (encrypted).",
         app.shared.cfg.default_region
     );
     if app.shared.cfg.public_url.is_some() {
@@ -724,7 +734,7 @@ pub async fn send_phone_prompt(
         );
     }
     let kb = KeyboardMarkup::new(vec![vec![
-        KeyboardButton::new("📱 Use my Telegram number").request(ButtonRequest::Contact)
+        KeyboardButton::new("Use my Telegram number").request(ButtonRequest::Contact)
     ]])
     .resize_keyboard()
     .one_time_keyboard();
@@ -791,6 +801,7 @@ async fn on_name_inner(
     app: Arc<App>,
     phone: String,
 ) -> Result<()> {
+    typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let raw = msg.text().unwrap_or_default().trim();
     let display_name = if raw.eq_ignore_ascii_case("skip") || raw == "-" {
@@ -841,7 +852,7 @@ async fn on_name_inner(
                 &msg,
                 &app,
                 format!(
-                    "📨 Code sent. Reply with the 6-digit code from the SMS.{}",
+                    "Code sent. Reply with the 6-digit code from the SMS.{}",
                     ch.resend_after_seconds
                         .map(|s| format!(" You can request a new one with /connect after {s}s."))
                         .unwrap_or_default()
@@ -872,6 +883,7 @@ async fn on_code_inner(
     app: Arc<App>,
     (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
 ) -> Result<()> {
+    typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let code: String = msg
@@ -917,7 +929,7 @@ async fn on_code_inner(
                     &bot,
                     &msg,
                     &app,
-                    "❌ Wrong code three times. Use /connect to request a new one.",
+                    "Wrong code three times. Use /connect to request a new one.",
                 )
                 .await
             } else {
@@ -933,7 +945,7 @@ async fn on_code_inner(
                     &bot,
                     &msg,
                     &app,
-                    "❌ That code is not right. Try again, or /cancel.",
+                    "That code is not right. Try again, or /cancel.",
                 )
                 .await
             }
@@ -966,7 +978,7 @@ pub async fn finish_connect(
     match app.connect(tg, session).await {
         Ok((_account, rt)) => {
             say_home(app, tg, format!(
-                    "✅ Connected as <b>{}</b>.\n\nImporting your groups now — each one becomes a topic in this chat. Reply inside a topic to post to that group.",
+                    "Connected as <b>{}</b>.\n\nImporting your groups now — each one becomes a topic in this chat. Reply inside a topic to post to that group.",
                     escape_html(&name)
                 ), None).await?;
             // Kick an initial sync so topics appear quickly even before the socket settles.
@@ -1064,6 +1076,7 @@ async fn on_group_phones_inner(
     app: Arc<App>,
     (name, category): (String, String),
 ) -> Result<()> {
+    typing(&bot, msg.chat.id, msg.thread_id).await;
     tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let rt = connected_runtime(&app, &tg).await?;
@@ -1118,7 +1131,7 @@ async fn on_group_phones_inner(
         .as_ref()
         .and_then(|l| l.min_members_to_post)
         .unwrap_or(0);
-    let mut report = format!("✅ Created <b>{}</b>.\n", escape_html(&group.name));
+    let mut report = format!("Created <b>{}</b>.\n", escape_html(&group.name));
     if min_members > 1 {
         report.push_str(&format!(
             "ℹ️ Tzibbur lets people post once the group has <b>{min_members}</b> members. Add more any time with /add inside its topic.\n"
@@ -1206,7 +1219,7 @@ async fn send_failed(
     let mut r = bot
         .send_message(
             msg.chat.id,
-            format!("❌ Not sent: {}.", escape_html(&e.to_string())),
+            format!("Not sent: {}.", escape_html(&e.to_string())),
         )
         .parse_mode(HTML)
         .reply_parameters(ReplyParameters::new(msg.id));
@@ -1229,15 +1242,15 @@ fn quote_prefix(reply: &Message, _self_id: &str) -> String {
     } else {
         ("You".to_owned(), raw.trim())
     };
-    if body.is_empty() || body.starts_with("🕘") || body.starts_with("🚫") {
+    if body.is_empty() || body.starts_with("") || body.starts_with("") {
         return String::new();
     }
     let snippet: String = body.chars().take(80).collect();
     let ell = if body.chars().count() > 80 { "…" } else { "" };
     if label.is_empty() {
-        format!("↩ “{snippet}{ell}”\n")
+        format!("“{snippet}{ell}”\n")
     } else {
-        format!("↩ {label}: “{snippet}{ell}”\n")
+        format!("{label}: “{snippet}{ell}”\n")
     }
 }
 
@@ -1315,9 +1328,9 @@ pub async fn on_callback(
                 ack = "Disconnected".into();
                 send_in(&bot, chat_id, thread,
                     if data == "disc:purge" {
-                        "🗑 Disconnected and erased. Your Tzibbur account itself is untouched (Tzibbur has no remote sign-out; the session simply stops being used)."
+                        "Disconnected and erased. Your Tzibbur account itself is untouched (Tzibbur has no remote sign-out; the session simply stops being used)."
                     } else {
-                        "🔌 Disconnected. Your topics stay; /reconnect brings them back to life."
+                        "Disconnected. Your topics stay; /reconnect brings them back to life."
                     },
                 )
                 .await?;
@@ -1327,7 +1340,7 @@ pub async fn on_callback(
             match super::groups::on_callback(&bot, &app, &q, &dialogue, d).await {
                 Ok(t) => ack = t,
                 Err(e) => {
-                    ack = format!("⚠️ {}", e.to_string().chars().take(180).collect::<String>());
+                    ack = e.to_string().chars().take(180).collect::<String>();
                 }
             }
         }
@@ -1417,7 +1430,7 @@ pub async fn on_pre_checkout(bot: BridgeBot, q: PreCheckoutQuery) -> Result<()> 
 pub async fn on_successful_payment(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()> {
     if let Some(p) = msg.successful_payment() {
         tracing::info!(chat = msg.chat.id.0, amount = p.total_amount, currency = %p.currency, "donation received");
-        say(&bot, &msg, &app, "⭐ Thank you for supporting the bridge!").await?;
+        say(&bot, &msg, &app, "Thank you for supporting the bridge!").await?;
     }
     Ok(())
 }
@@ -1439,21 +1452,6 @@ pub async fn on_edited(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<()
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::split_for_tzibbur;
-    #[test]
-    fn splits_on_whitespace() {
-        let words: Vec<String> = (0..300).map(|i| format!("word{i}")).collect();
-        let text = words.join(" ");
-        let parts = split_for_tzibbur(&text, 1000);
-        assert!(parts.len() >= 2);
-        assert!(parts.iter().all(|p| p.chars().count() <= 1000));
-        assert_eq!(parts.join(" ").split_whitespace().count(), 300);
-        assert_eq!(split_for_tzibbur("short", 1000), vec!["short"]);
-    }
-}
-
 /// Same as `on_command_inner`, but failures are shown to the user instead of only logged.
 pub async fn on_command(
     bot: BridgeBot,
@@ -1465,14 +1463,9 @@ pub async fn on_command(
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_command_inner(bot, msg, cmd, app, dialogue).await {
         tracing::warn!(error = %e, "handler on_command failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1482,14 +1475,9 @@ pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<(
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_message_inner(bot, msg, app).await {
         tracing::warn!(error = %e, "handler on_message failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1499,14 +1487,9 @@ pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<A
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_phone_inner(bot, msg, dialogue, app).await {
         tracing::warn!(error = %e, "handler on_phone failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1522,14 +1505,9 @@ pub async fn on_name(
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_name_inner(bot, msg, dialogue, app, phone).await {
         tracing::warn!(error = %e, "handler on_name failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1553,14 +1531,9 @@ pub async fn on_code(
     .await
     {
         tracing::warn!(error = %e, "handler on_code failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1575,14 +1548,9 @@ pub async fn on_group_name(
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_group_name_inner(bot, msg, dialogue, app).await {
         tracing::warn!(error = %e, "handler on_group_name failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
 }
@@ -1598,14 +1566,24 @@ pub async fn on_group_phones(
     let (bot_c, msg_c, app_c) = (bot.clone(), msg.clone(), app.clone());
     if let Err(e) = on_group_phones_inner(bot, msg, dialogue, app, (name, category)).await {
         tracing::warn!(error = %e, "handler on_group_phones failed");
-        say(
-            &bot_c,
-            &msg_c,
-            &app_c,
-            format!("⚠️ {}", escape_html(&friendly(&e))),
-        )
-        .await
-        .ok();
+        say(&bot_c, &msg_c, &app_c, escape_html(&friendly(&e)))
+            .await
+            .ok();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_for_tzibbur;
+    #[test]
+    fn splits_on_whitespace() {
+        let words: Vec<String> = (0..300).map(|i| format!("word{i}")).collect();
+        let text = words.join(" ");
+        let parts = split_for_tzibbur(&text, 1000);
+        assert!(parts.len() >= 2);
+        assert!(parts.iter().all(|p| p.chars().count() <= 1000));
+        assert_eq!(parts.join(" ").split_whitespace().count(), 300);
+        assert_eq!(split_for_tzibbur("short", 1000), vec!["short"]);
+    }
 }

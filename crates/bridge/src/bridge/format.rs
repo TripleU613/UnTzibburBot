@@ -15,6 +15,17 @@ pub fn escape_html(s: &str) -> String {
     out
 }
 
+/// Tzibbur prefixes every body with the sender's display name (`"Aaron Levi: hey"`).
+/// Split it off: returns `(name, rest)` when the body starts with `Something: `.
+pub fn split_name_prefix(body: &str) -> Option<(&str, &str)> {
+    let (name, rest) = body.split_once(": ")?;
+    let name = name.trim();
+    if name.is_empty() || name.len() > 64 || name.contains('\n') || name.contains("http") {
+        return None;
+    }
+    Some((name, rest))
+}
+
 /// Who sent a message, as shown in Telegram.
 pub fn sender_label(
     msg: &MessageEntity,
@@ -39,11 +50,20 @@ pub fn sender_label(
     if msg.sender_id.starts_with("00000000-0000-7000-8000-") {
         return "Tzibbur".into();
     }
+    // Unknown member: the server-side prefix carries the name.
+    if let Some((name, _)) = split_name_prefix(&msg.body) {
+        return name.to_owned();
+    }
     format!("Member {}", &msg.sender_id[..msg.sender_id.len().min(8)])
 }
 
-/// Telegram message body for an inbound Tzibbur message.
+/// Telegram message body for an inbound Tzibbur message. The server's
+/// `"Name: "` prefix is dropped when it matches the label we show.
 pub fn render_inbound(label: &str, body: &str, group_prefix: Option<&str>) -> String {
+    let body = match split_name_prefix(body) {
+        Some((name, rest)) if name == label || label == "You" => rest,
+        _ => body,
+    };
     let mut s = String::new();
     if let Some(g) = group_prefix {
         s.push_str(&format!("<i>[{}]</i>\n", escape_html(g)));
@@ -78,6 +98,23 @@ pub fn chunk(s: &str, max: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn name_prefix() {
+        assert_eq!(
+            split_name_prefix("Aaron Levi: hey"),
+            Some(("Aaron Levi", "hey"))
+        );
+        assert_eq!(split_name_prefix("no prefix here"), None);
+        assert_eq!(
+            render_inbound("Aaron Levi", "Aaron Levi: hey", None),
+            "<b>Aaron Levi</b>\nhey"
+        );
+        assert_eq!(
+            render_inbound("Bob", "Alice: hi", None),
+            "<b>Bob</b>\nAlice: hi"
+        );
+    }
+
     #[test]
     fn escapes() {
         assert_eq!(escape_html("a<b>&c"), "a&lt;b&gt;&amp;c");

@@ -1,0 +1,7 @@
+# Production override: run the image built by CI instead of building on the host.
+#   docker compose --env-file .env -f docker-compose.yml -f docker-compose.prod.yml -p untzibburbot up -d
+services:
+  bridge:
+    build: !reset null
+    image: ghcr.io/tripleu613/untzibburbot:${IMAGE_TAG:-latest}
+    pull_policy: always
