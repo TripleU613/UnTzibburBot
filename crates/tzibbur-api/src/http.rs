@@ -30,6 +30,63 @@ impl<F: Fn() + Send + Sync> SessionInvalidationListener for F {
     }
 }
 
+/// How the client presents itself to the server (what shows up under
+/// `GET /v1/me/devices` as `platform` / `deviceModel`). Defaults mimic the
+/// Android app so the bridge registers as an Android device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceInfo {
+    /// `android` | `ios` | `web` | `kosher` …
+    pub platform: String,
+    /// e.g. `Pixel 7`
+    pub model: String,
+    /// App version the server sees, e.g. `0.1.0`
+    pub app_version: String,
+    /// OS version string, e.g. `14`
+    pub os_version: String,
+}
+
+impl Default for DeviceInfo {
+    fn default() -> Self {
+        Self::android()
+    }
+}
+
+impl DeviceInfo {
+    /// The reverse-engineered app: `com.tzibbur.app` 0.1.0 on a Pixel 7 / Android 14.
+    pub fn android() -> Self {
+        Self {
+            platform: "android".into(),
+            model: "Pixel 7".into(),
+            app_version: "0.1.0".into(),
+            os_version: "14".into(),
+        }
+    }
+
+    /// `Tzibbur/0.1.0 (Android 14; Pixel 7) Ktor`
+    pub fn user_agent(&self) -> String {
+        let os = match self.platform.as_str() {
+            "android" => "Android",
+            "ios" => "iOS",
+            other => other,
+        };
+        format!(
+            "Tzibbur/{} ({} {}; {}) Ktor",
+            self.app_version, os, self.os_version, self.model
+        )
+    }
+
+    /// Extra headers sent with every request and the WS handshake.
+    pub fn headers(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("X-Platform", self.platform.clone()),
+            ("X-Device-Platform", self.platform.clone()),
+            ("X-Device-Model", self.model.clone()),
+            ("X-App-Version", self.app_version.clone()),
+            ("X-OS-Version", self.os_version.clone()),
+        ]
+    }
+}
+
 /// Builder for [`TzibburClient`].
 pub struct ClientBuilder {
     base_url: String,
@@ -38,17 +95,22 @@ pub struct ClientBuilder {
     timeout: Duration,
     listener: Option<Arc<dyn SessionInvalidationListener>>,
     http: Option<reqwest::Client>,
+    device: DeviceInfo,
+    user_agent_override: bool,
 }
 
 impl Default for ClientBuilder {
     fn default() -> Self {
+        let device = DeviceInfo::default();
         Self {
             base_url: DEFAULT_BASE_URL.to_owned(),
             token: None,
-            user_agent: format!("tzibbur-api/{} (rust)", env!("CARGO_PKG_VERSION")),
+            user_agent: device.user_agent(),
             timeout: Duration::from_secs(30),
             listener: None,
             http: None,
+            device,
+            user_agent_override: false,
         }
     }
 }
@@ -62,8 +124,18 @@ impl ClientBuilder {
         self.token = Some(token.into());
         self
     }
+    /// Override the User-Agent (by default it is derived from [`DeviceInfo`]).
     pub fn user_agent(mut self, ua: impl Into<String>) -> Self {
         self.user_agent = ua.into();
+        self.user_agent_override = true;
+        self
+    }
+    /// Present as this device (platform / model / versions). Defaults to Android.
+    pub fn device(mut self, device: DeviceInfo) -> Self {
+        if !self.user_agent_override {
+            self.user_agent = device.user_agent();
+        }
+        self.device = device;
         self
     }
     pub fn timeout(mut self, t: Duration) -> Self {
@@ -106,6 +178,7 @@ impl ClientBuilder {
                 token: RwLock::new(self.token),
                 listener: self.listener,
                 user_agent: self.user_agent,
+                device: self.device,
             }),
         })
     }
@@ -117,6 +190,7 @@ struct Inner {
     token: RwLock<Option<String>>,
     listener: Option<Arc<dyn SessionInvalidationListener>>,
     user_agent: String,
+    device: DeviceInfo,
 }
 
 /// Cheaply clonable REST client.
@@ -149,6 +223,11 @@ impl TzibburClient {
 
     pub fn user_agent(&self) -> &str {
         &self.inner.user_agent
+    }
+
+    /// The device identity presented to the server.
+    pub fn device(&self) -> &DeviceInfo {
+        &self.inner.device
     }
 
     /// Replace (or clear) the bearer token used for subsequent requests.
@@ -220,6 +299,9 @@ impl TzibburClient {
             req = req.header(AUTHORIZATION, format!("Bearer {tok}"));
         }
         req = req.header(USER_AGENT, &self.inner.user_agent);
+        for (k, v) in self.inner.device.headers() {
+            req = req.header(k, v);
+        }
         tracing::debug!(%method, %url, "tzibbur request");
         let resp = req.send().await?;
         let status = resp.status();

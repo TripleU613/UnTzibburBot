@@ -298,7 +298,7 @@ pub async fn on_command(
             .await?;
         }
         Command::Legal => {
-            let client = TzibburClient::builder().base_url(app.shared.cfg.tzibbur_base_url.clone()).build()?;
+            let client = TzibburClient::builder().base_url(app.shared.cfg.tzibbur_base_url.clone()).device(app.shared.cfg.device.clone()).build()?;
             for key in [LegalDocKey::Terms, LegalDocKey::Privacy] {
                 match client.legal(key).await {
                     Ok(doc) => {
@@ -547,6 +547,7 @@ pub async fn on_name(
     };
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
+        .device(app.shared.cfg.device.clone())
         .build()?;
     match client
         .start_auth(&StartAuthRequest {
@@ -619,6 +620,7 @@ pub async fn on_code(
     }
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
+        .device(app.shared.cfg.device.clone())
         .build()?;
     let req = VerifyAuthRequest {
         challenge_id: challenge_id.clone(),

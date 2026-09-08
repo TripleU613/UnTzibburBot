@@ -29,6 +29,9 @@ pub struct Config {
     pub collection_prefix: String,
     /// Country assumed for phone numbers typed without a country code (`BRIDGE_DEFAULT_REGION`), default `US`.
     pub default_region: String,
+    /// How the bridge presents itself to Tzibbur (`TZIBBUR_PLATFORM`, `TZIBBUR_DEVICE_MODEL`,
+    /// `TZIBBUR_APP_VERSION`, `TZIBBUR_OS_VERSION`); defaults to the Android app on a Pixel 7.
+    pub device: tzibbur_api::DeviceInfo,
 }
 
 fn env(name: &str) -> Option<String> {
@@ -89,6 +92,15 @@ impl Config {
                 .unwrap_or(20),
             collection_prefix: env("BRIDGE_COLLECTION_PREFIX").unwrap_or_else(|| "bridge_".into()),
             default_region: env("BRIDGE_DEFAULT_REGION").unwrap_or_else(|| "US".into()),
+            device: {
+                let d = tzibbur_api::DeviceInfo::android();
+                tzibbur_api::DeviceInfo {
+                    platform: env("TZIBBUR_PLATFORM").unwrap_or(d.platform),
+                    model: env("TZIBBUR_DEVICE_MODEL").unwrap_or(d.model),
+                    app_version: env("TZIBBUR_APP_VERSION").unwrap_or(d.app_version),
+                    os_version: env("TZIBBUR_OS_VERSION").unwrap_or(d.os_version),
+                }
+            },
         })
     }
 }

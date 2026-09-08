@@ -47,7 +47,7 @@ pub mod validation;
 pub mod ws;
 
 pub use error::{AppError, ProblemDto, Result};
-pub use http::{ClientBuilder, SessionInvalidationListener, TzibburClient};
+pub use http::{ClientBuilder, DeviceInfo, SessionInvalidationListener, TzibburClient};
 pub use sync::{SyncEngine, SyncEvent, SyncState};
 pub use ws::{ClientFrame, DisconnectReason, GroupEvent, ServerFrame, SocketEvent, TzibburSocket};
 
@@ -55,7 +55,7 @@ pub use ws::{ClientFrame, DisconnectReason, GroupEvent, ServerFrame, SocketEvent
 pub mod prelude {
     pub use crate::constants::*;
     pub use crate::error::{AppError, Result};
-    pub use crate::http::{SessionInvalidationListener, TzibburClient};
+    pub use crate::http::{DeviceInfo, SessionInvalidationListener, TzibburClient};
     pub use crate::models::*;
     pub use crate::outbox::{OutboxDispatcher, OutboxEvent};
     pub use crate::session::{

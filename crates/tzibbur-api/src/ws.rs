@@ -468,6 +468,14 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
         if let Ok(v) = shared.client.user_agent().parse() {
             req.headers_mut().insert(http::header::USER_AGENT, v);
         }
+        for (k, v) in shared.client.device().headers() {
+            if let (Ok(name), Ok(val)) = (
+                http::header::HeaderName::from_bytes(k.as_bytes()),
+                v.parse::<http::HeaderValue>(),
+            ) {
+                req.headers_mut().insert(name, val);
+            }
+        }
         if let Ok(v) = WS_PROTOCOL_VERSION.to_string().parse() {
             req.headers_mut().insert("X-Tzibbur-Protocol-Version", v);
         }

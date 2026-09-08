@@ -127,6 +127,7 @@ async fn api_start(
         .map_err(|why| err(StatusCode::BAD_REQUEST, format!("phone: {why}")))?;
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
+        .device(app.shared.cfg.device.clone())
         .build()
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let display_name = req
@@ -160,6 +161,7 @@ async fn api_verify(
     }
     let client = TzibburClient::builder()
         .base_url(app.shared.cfg.tzibbur_base_url.clone())
+        .device(app.shared.cfg.device.clone())
         .build()
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let display_name = req
