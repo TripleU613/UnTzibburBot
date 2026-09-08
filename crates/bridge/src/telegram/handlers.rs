@@ -730,7 +730,7 @@ pub async fn on_code(
 
 /// Shared by the chat flow and the Mini App: persist + start + welcome.
 pub async fn finish_connect(
-    bot: &BridgeBot,
+    _bot: &BridgeBot,
     _chat: ChatId,
     tg: &TgUser,
     app: &App,
