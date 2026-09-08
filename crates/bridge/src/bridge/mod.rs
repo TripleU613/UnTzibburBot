@@ -442,6 +442,9 @@ impl AccountRuntime {
         let Some(g) = self.local.get_group(group_id)? else {
             return Ok(());
         };
+        if g.is_deleted {
+            return Ok(());
+        }
         if !self.settings().auto_topics
             && self
                 .shared

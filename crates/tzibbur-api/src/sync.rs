@@ -237,11 +237,12 @@ impl SyncEngine {
 
     /// Pull-to-refresh: REST catch-up when not live, then poke outbox and reconcile groups.
     pub async fn refresh_now(&self) -> Result<()> {
+        self.reconcile_groups().await?;
         if self.sync_state() != SyncState::Connected {
             self.rest_catch_up().await?;
         }
         self.outbox.poke();
-        self.reconcile_groups().await.map(|_| ())
+        Ok(())
     }
 
     async fn event_loop(self: Arc<Self>, mut stop_rx: watch::Receiver<bool>) {
@@ -287,11 +288,12 @@ impl SyncEngine {
         match ev {
             SocketEvent::Connected => {
                 self.set_state(SyncState::Connected);
-                if let Err(e) = self.rest_catch_up().await {
-                    tracing::warn!(error = %e, "sync: catch-up on connect failed");
-                }
+                // Groups first so deleted/left groups are flagged before consumers see `CaughtUp`.
                 if let Err(e) = self.reconcile_groups().await {
                     tracing::warn!(error = %e, "sync: group reconcile on connect failed");
+                }
+                if let Err(e) = self.rest_catch_up().await {
+                    tracing::warn!(error = %e, "sync: catch-up on connect failed");
                 }
                 self.outbox.poke();
             }
