@@ -1,0 +1,46 @@
+[package]
+name = "tzibbur-api"
+version = "0.1.0"
+edition = "2021"
+description = "Rust client for the Tzibbur API (REST + WebSocket), with local store, sync engine and outbox."
+license = "MIT"
+
+[lib]
+name = "tzibbur_api"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+tungstenite = "0.24"
+futures-util = { version = "0.3", features = ["sink"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tracing = "0.1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+rand = "0.8"
+http = "1"
+async-trait = "0.1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+parking_lot = "0.12"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
+
+[dependencies.chrono]
+version = "0.4"
+default-features = false
+features = ["std", "clock", "serde"]
+
+[dependencies.aes-gcm]
+version = "0.10"
+
+[dev-dependencies.axum]
+version = "0.7"
+features = ["ws", "json"]

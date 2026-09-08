@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/tzibbur-api", "crates/bridge"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

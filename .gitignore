@@ -1,0 +1,7 @@
+/target
+.tzibbur/
+*.db
+*.db-wal
+*.db-shm
+test-account.env
+*.env

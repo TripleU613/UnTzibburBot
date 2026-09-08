@@ -1,0 +1,31 @@
+[package]
+name = "tzibbur-telegram-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "Telegram bot that mirrors a user's Tzibbur groups into topics in their private chat with the bot."
+license = "MIT"
+default-run = "tzibbur-telegram-bridge"
+
+[[bin]]
+name = "tzibbur-telegram-bridge"
+path = "src/main.rs"
+
+[dependencies]
+tzibbur-api = { path = "../tzibbur-api" }
+teloxide = { version = "0.17", default-features = false, features = ["macros", "rustls", "ctrlc_handler", "throttle", "webhooks-axum"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "fs"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+base64 = "0.22"
+rand = "0.8"
+parking_lot = "0.12"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+url = "2"
+axum = "0.8"
+dashmap = "6"
