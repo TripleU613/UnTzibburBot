@@ -1,4 +1,5 @@
 # Build the image on GitHub, then deploy to the production host over Tailscale SSH.
+# The host address is the repository variable DEPLOY_HOST (e.g. root@100.x.y.z).
 #
 # Secrets: only TS_AUTHKEY (a reusable, ephemeral, preauthorized Tailscale auth key
 # tagged tag:ci). Runtime secrets live in /opt/untzibburbot/.env on the host and are
@@ -16,6 +17,7 @@ permissions:
   packages: write
 env:
   IMAGE: ghcr.io/tripleu613/untzibburbot
+  # user@tailscale-ip of the host; set as a repository variable, never in the repo.
   HOST: ${{ vars.DEPLOY_HOST }}
   DEPLOY_DIR: /opt/untzibburbot
 jobs:
