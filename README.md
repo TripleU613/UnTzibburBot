@@ -1,19 +1,42 @@
-# UnTzibburBot — Tzibbur ↔ Telegram bridge
+# UnTzibburBot
 
-Pure-Rust workspace, shipped as one Docker image, with Directus as the database.
+A Telegram client for [Tzibbur](https://tzibbur.me), the groups-only text messaging service.
+Talk to **@TzibburBot**, sign in with your phone number, and every Tzibbur group you belong to
+becomes a topic in your chat with the bot. Read there, reply there.
+
+[![CI](https://github.com/TripleU613/UnTzibburBot/actions/workflows/ci.yml/badge.svg)](https://github.com/TripleU613/UnTzibburBot/actions/workflows/ci.yml)
+[![Deploy](https://github.com/TripleU613/UnTzibburBot/actions/workflows/deploy.yml/badge.svg)](https://github.com/TripleU613/UnTzibburBot/actions/workflows/deploy.yml)
+
+Pure Rust, one Docker image, Directus as the database. MIT licensed.
 
 | Crate | What |
 |---|---|
-| [`crates/bridge`](crates/bridge/README.md) | The Telegram bot (`teloxide`). Each user's Tzibbur groups become topics in their private chat with the bot; messages flow both ways. Directus stores users, accounts (encrypted session), topic and message mappings. Mini App login, Telegram Stars, Docker Compose stack. |
+| [`crates/bridge`](crates/bridge/README.md) | The bot (`teloxide`). One topic per Tzibbur group in the user's private chat, messages both ways, group management, Telegram Stars. Directus stores users, accounts (encrypted session), topic and message-id mappings. Never message text. |
 | [`crates/tzibbur-api`](#tzibbur-api) | Client library for the Tzibbur service (REST, WebSocket, SQLite cache, sync engine, outbox), reverse-engineered from the Android app and verified against the live server. |
 
+## Run your own
+
 ```sh
-cp .env.example .env          # bot token, Directus secrets, BRIDGE_MASTER_KEY
+cp .env.example .env          # bot token, Directus secrets, BRIDGE_MASTER_KEY (openssl rand -base64 32)
 docker compose up -d --build  # postgres + directus + bridge
 ```
 
-See [`crates/bridge/README.md`](crates/bridge/README.md) for commands, configuration and the architecture.
-The original design notes are in `tzibbur-re.md` (protocol) and the architecture doc this replaces Cloudflare Workers/D1/Durable Objects with a single Rust process + Directus.
+In @BotFather enable **Threaded Mode** for your bot so topics work in private chats.
+Details, commands, configuration and the privacy model: [`crates/bridge/README.md`](crates/bridge/README.md).
+
+## Privacy in one paragraph
+
+The bot relays messages; it does not keep them. Message text is erased from the bridge the
+moment it is delivered, Directus holds only ids and mappings, and nothing is logged beyond ids
+and error codes. What an always-on relay must hold is each user's Tzibbur session token,
+encrypted at rest. Users see the same statement in the bot via `/privacy`.
+
+## Contributing
+
+No secrets live in this repository; runtime configuration is a `.env` on the host.
+`cargo fmt`, `cargo clippy --all-targets -- -D warnings` and `cargo test --workspace` run in CI.
+`cargo run -p tzibbur-api --example live_smoke` exercises every Tzibbur endpoint with a
+throwaway group (needs `TZIBBUR_TOKEN`).
 
 ---
 
