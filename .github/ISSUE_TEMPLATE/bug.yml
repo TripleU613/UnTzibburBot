@@ -1,0 +1,24 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what happened instead. No message text or phone numbers, please.
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where
+      placeholder: "@TzibburBot public instance, or your own build (commit/tag)"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Bot reply or log lines
+      description: Paste the bot's reply or relevant log lines. Redact ids if you prefer.
+      render: text

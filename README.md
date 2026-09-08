@@ -44,4 +44,8 @@ One image, Postgres and Directus alongside. Enable **Threaded Mode** for your bo
 
 Rust, [teloxide](https://github.com/teloxide/teloxide), [Directus](https://directus.io), and a from-scratch Tzibbur client ([`crates/tzibbur-api`](crates/tzibbur-api)).
 
-<p align="center"><sub>Free software under the AGPL-3.0: use it, change it, share it, keep it open. Not affiliated with Tzibbur.</sub></p>
+## Contributing
+
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports go through GitHub's private reporting, see [SECURITY.md](SECURITY.md).
+
+<p align="center"><sub>Free software under the AGPL-3.0: use it, change it, share it, keep it open. Not affiliated with Tzibbur. <a href="docs/PRIVACY.md">Privacy</a> · <a href="docs/TERMS.md">Terms</a> · <a href="CHANGELOG.md">Changelog</a></sub></p>

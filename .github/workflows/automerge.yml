@@ -1,0 +1,43 @@
+# Auto-merge "good" pull requests once CI is green:
+#   - Dependabot patch/minor updates
+#   - any PR a maintainer labels `automerge`
+# Merging waits for the required status checks on main (branch ruleset).
+name: Auto-merge
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  automerge:
+    runs-on: ubuntu-latest
+    if: github.repository == 'TripleU613/UnTzibburBot'
+    steps:
+      - name: Dependabot metadata
+        id: dep
+        if: github.actor == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Decide
+        id: decide
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          UPDATE_TYPE: ${{ steps.dep.outputs.update-type }}
+          ACTOR: ${{ github.actor }}
+          LABELER: ${{ github.event.sender.login }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ok=false
+          if [ "$ACTOR" = "dependabot[bot]" ] && { [ "$UPDATE_TYPE" = "version-update:semver-patch" ] || [ "$UPDATE_TYPE" = "version-update:semver-minor" ]; }; then ok=true; fi
+          if echo ",$LABELS," | grep -q ",automerge,"; then
+            perm=$(gh api "repos/${{ github.repository }}/collaborators/$LABELER/permission" --jq .permission 2>/dev/null || echo none)
+            case "$perm" in admin|maintain|write) ok=true;; esac
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+      - name: Enable auto-merge (squash)
+        if: steps.decide.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --auto --squash --delete-branch "${{ github.event.pull_request.html_url }}"
