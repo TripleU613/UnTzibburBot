@@ -15,7 +15,9 @@ Telegram topic  ─▶ teloxide handlers      ─▶ AccountRuntime ─▶ outbo
 - `/connect` — phone + SMS code in chat (the code message is deleted immediately and never stored), or the **≡ menu button** opens a Mini App login page when `BRIDGE_PUBLIC_URL` is set (initData is HMAC-verified).
 - Initial import: every group → topic, last N messages as history; new groups create topics automatically; renames rename topics; deletion/removal closes the topic.
 - Reply in a topic to post to the group; delivery is confirmed with a 👍 reaction, failures get a 👎 and an explanation. Text only (Tzibbur is text-only).
-- `/newgroup` (name → category → members), `/add`, `/members`, `/leave`, `/mute`, `/name`, `/chats`, `/status`, `/sync`, `/settings`, `/legal`, `/disconnect` (keep or erase mappings), `/donate` (Telegram Stars).
+- `/newgroup` (name → category → members), `/add`, `/members`, `/manage`, `/rename`, `/leave`, `/mute` (muted groups arrive silently), `/find` (search a group's recent messages, live from Tzibbur), `/name`, `/chats`, `/accounts` (several Tzibbur accounts, one active for main-thread commands), `/language` (English, Hebrew, Yiddish), `/status`, `/sync`, `/settings`, `/legal`, `/disconnect` (keep or erase mappings), `/donate` (Telegram Stars).
+- Sharing a contact inside a group topic adds that person. Messages over the Tzibbur limit ask before being sent in parts.
+- Operator: `/stats` (counts only) and rate-limited alerts to `BRIDGE_ADMIN_TELEGRAM_ID`.
 - Session expiry (401) → account marked `reauth_required`, user gets a **Reconnect** button; topics are reused after reconnecting.
 - Fallback when topics are unavailable: messages arrive tagged with the group name; replying to one routes the answer to that group.
 - Privacy-minimal storage: Directus holds ids, mappings and the AES-256-GCM–encrypted session only. Message bodies live in a per-account SQLite cache under `BRIDGE_DATA_DIR` (needed for sync/dedup) and in Tzibbur.
@@ -81,7 +83,10 @@ tailnet with a `tag:ci` auth key (`TS_AUTHKEY`, the only GitHub secret) and runs
 | `TELOXIDE_TOKEN` | Bot token |
 | `DIRECTUS_URL`, `DIRECTUS_TOKEN` | Directus base URL and a static token with admin rights |
 | `BRIDGE_MASTER_KEY` | base64 32 bytes; encrypts Tzibbur sessions at rest |
-| `BRIDGE_PUBLIC_URL` | optional public HTTPS URL → webhook mode at `/telegram/webhook`, Mini App at `/app` |
+| `BRIDGE_PUBLIC_URL` | optional public HTTPS URL of this service (a path prefix is fine, e.g. a Tailscale Funnel path). Enables the Mini App login at `<url>/app` and the menu button. |
+| `BRIDGE_USE_WEBHOOK` | `true` to receive updates by webhook at `<url>/telegram/webhook` instead of long polling (default `false`) |
+| `BRIDGE_ADMIN_TELEGRAM_ID` | Telegram user id of the operator: `/stats` and error alerts (ids and codes only) |
+| `BRIDGE_BIND`, `BRIDGE_PORT` | host bind for the HTTP port in `docker-compose.yml` (default `127.0.0.1:8081`) |
 | `BRIDGE_LISTEN` | bind address (default `0.0.0.0:8080`; `/health`) |
 | `BRIDGE_DATA_DIR` | per-account SQLite caches |
 | `BRIDGE_HISTORY_IMPORT` | messages imported per group when its topic is created (default 20) |

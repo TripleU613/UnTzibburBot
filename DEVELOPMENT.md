@@ -78,6 +78,20 @@ secrets, and nothing sensitive is in this repository. Required in GitHub: secret
 variable `DEPLOY_HOST`. The tailnet policy must allow `tag:ci` to reach the host on port 22
 and to SSH as the deploy user.
 
+## Mini App over Tailscale Funnel
+
+The login Mini App needs a public HTTPS URL. On a Tailscale host this costs one command and
+touches nothing else on the machine:
+
+```sh
+tailscale funnel --bg --set-path /tzibbur http://127.0.0.1:8081   # bridge port from docker-compose.yml
+```
+
+Then set `BRIDGE_PUBLIC_URL=https://<host>.<tailnet>.ts.net/tzibbur` in the host `.env`. The
+bridge serves the app under both `/app` and `<prefix>/app`, so it works whether the proxy strips
+the prefix or not. The tailnet policy needs `nodeAttrs: [{target: [<host tag>], attr: [funnel]}]`.
+Long polling stays on; webhooks are optional (`BRIDGE_USE_WEBHOOK=true`).
+
 ## Durability
 
 Tzibbur is the source of truth; nothing the bridge stores is needed to recover messages.
