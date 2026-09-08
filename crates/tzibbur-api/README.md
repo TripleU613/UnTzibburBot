@@ -1,7 +1,8 @@
 # tzibbur-api
 
 Rust client for the **Tzibbur** group-messaging service (used by [UnTzibburBot](../../README.md)), reconstructed from the
-reverse-engineered Android app (`com.tzibbur.app` 0.1.0, see `tzibbur-re.md`).
+reverse-engineered Android app and verified against the live server. The protocol is documented in
+[`docs/tzibbur-api.md`](../../docs/tzibbur-api.md).
 It covers every layer the reference describes:
 
 | Reference section | Module | What's there |
@@ -71,8 +72,10 @@ Runnable examples:
 ```sh
 # Log in with phone + OTP, then stream messages
 TZIBBUR_PHONE=+972501234567 TZIBBUR_NAME=Bridge cargo run --example login_and_listen
-# Read-only probe of every GET endpoint + a WS connect with an existing token
+# Read-only look at an account: every GET endpoint + a short WS connect
 TZIBBUR_TOKEN=... cargo run --example probe
+# Every endpoint, including writes, against a throwaway group
+TZIBBUR_TOKEN=... cargo run --example live_smoke
 ```
 
 ## Architecture

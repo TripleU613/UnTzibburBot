@@ -9,7 +9,8 @@ crates/
   tzibbur-api/   client library for the Tzibbur service: REST, WebSocket, SQLite cache,
                  sync engine, outbox (README inside)
   bridge/        the Telegram bot: teloxide handlers, per-account runtimes, Directus store
-assets/          logo.png, avatar.png (for @BotFather), banner.png, topics.svg
+assets/          logo, avatar (for @BotFather), banner, README screens
+docs/            Tzibbur API reference, decompiled app notes
 .github/         CI (fmt, clippy -D warnings, tests, docker build) and Deploy
 ```
 
@@ -30,9 +31,9 @@ Telegram topic  ──▶ handlers   ──▶ AccountRuntime ──▶ outbox �
 
 ## Tzibbur protocol notes
 
-The client was reverse-engineered from the Android app (`tzibbur-re.md`) and then verified
-against the live server; the live behaviour wins. The full list is in
-[`crates/tzibbur-api/README.md`](crates/tzibbur-api/README.md). The ones that bite:
+The full protocol reference is [`docs/tzibbur-api.md`](docs/tzibbur-api.md); the decompiled
+notes it was reconciled against are [`docs/android-app-notes.md`](docs/android-app-notes.md).
+The points that bite:
 
 - Enums are lowercase (`admin`, `system`, `everyone`). Group settings are nested.
 - `POST /v1/auth/start` and `/verify` require `platform` and `deviceModel`.

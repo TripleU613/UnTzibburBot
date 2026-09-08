@@ -42,7 +42,7 @@ cp .env.example .env          # bot token, database secrets, one master key
 docker compose up -d --build
 ```
 
-One image, Postgres and Directus alongside. Enable **Threaded Mode** for your bot in @BotFather so topics work in private chats. Everything else is in [DEVELOPMENT.md](DEVELOPMENT.md).
+One image, Postgres and Directus alongside. Enable **Threaded Mode** for your bot in @BotFather so topics work in private chats. Everything else is in [DEVELOPMENT.md](DEVELOPMENT.md); the Tzibbur protocol is written up in [docs/tzibbur-api.md](docs/tzibbur-api.md).
 
 ## Built with
 
