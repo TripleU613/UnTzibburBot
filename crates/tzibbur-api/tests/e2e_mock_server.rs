@@ -289,6 +289,7 @@ async fn rest_auth_and_error_mapping() {
         .unwrap();
     assert_eq!(ch.challenge_id, "ch1");
     assert_eq!(ch.resend_after_seconds, Some(30));
+    assert_eq!(ch.expires_at_epoch_ms, Some(1_800_000_000_000));
 
     let bad = client
         .verify_auth(&VerifyAuthRequest {

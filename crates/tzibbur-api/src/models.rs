@@ -403,15 +403,44 @@ pub struct Session {
     pub token: String,
 }
 
-/// Response of `POST /v1/auth/start`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Response of `POST /v1/auth/start`. The live server does not send
+/// `expiresAtEpochMs` as the decompiled app expected, so expiry is optional and
+/// accepted under several names; unknown fields are kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EnrollmentChallenge {
+    #[serde(alias = "id", alias = "challenge")]
     pub challenge_id: String,
-    #[serde(deserialize_with = "de_epoch_ms")]
-    pub expires_at_epoch_ms: i64,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "expiresAt",
+        alias = "expires_at",
+        alias = "expiresAtMs",
+        alias = "expiry",
+        deserialize_with = "de_epoch_ms_opt"
+    )]
+    pub expires_at_epoch_ms: Option<i64>,
+    #[serde(default, alias = "expiresInSeconds", alias = "ttlSeconds")]
+    pub expires_in_seconds: Option<u64>,
+    #[serde(
+        default,
+        alias = "resendAfter",
+        alias = "retryAfterSeconds",
+        alias = "resendInSeconds"
+    )]
     pub resend_after_seconds: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl EnrollmentChallenge {
+    /// Best-effort expiry as epoch ms.
+    pub fn expires_at(&self) -> Option<i64> {
+        self.expires_at_epoch_ms.or_else(|| {
+            self.expires_in_seconds
+                .map(|s| now_epoch_ms() + (s as i64) * 1000)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
