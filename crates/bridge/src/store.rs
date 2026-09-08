@@ -265,6 +265,14 @@ impl Store {
             .context("create user")
     }
 
+    pub async fn users_with_home_topic(&self) -> Result<Vec<BridgeUser>> {
+        let all: Vec<BridgeUser> = self.d.list(&self.n.users, &[], None, None).await?;
+        Ok(all
+            .into_iter()
+            .filter(|u| u.home_topic_id().is_some())
+            .collect())
+    }
+
     pub async fn set_home_topic(&self, user_id: i64, topic_id: Option<i32>) -> Result<()> {
         let current: Option<BridgeUser> = self.d.get(&self.n.users, user_id).await?;
         let mut settings = current

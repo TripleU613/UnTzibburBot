@@ -593,7 +593,7 @@ impl AccountRuntime {
         self.shared.store.set_conversation_name(conv.id, name).await
     }
 
-    /// Notice to the user's 🏠 home topic.
+    /// Notice to the user's main thread.
     pub async fn notify_user(&self, text: &str, keyboard: Option<InlineKeyboardMarkup>) {
         let user = match self
             .shared
@@ -811,57 +811,10 @@ fn is_missing_thread(e: &teloxide::RequestError) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Home topic
+// Main-thread messaging
 // ---------------------------------------------------------------------------
 
-pub const HOME_TOPIC_NAME: &str = "🏠 Tzibbur";
-
-/// Get or create the user's control topic ("🏠 Tzibbur"), where onboarding,
-/// commands and notices live. `None` when the bot has no topic mode.
-pub async fn ensure_home_topic(
-    shared: &Shared,
-    user: &crate::store::BridgeUser,
-) -> Option<ThreadId> {
-    if let Some(t) = user.home_topic_id() {
-        return Some(ThreadId(MessageId(t)));
-    }
-    if !shared.bot_topics_enabled.load(Ordering::Relaxed) {
-        return None;
-    }
-    let chat: i64 = user.telegram_user_id.parse().ok()?;
-    match shared
-        .bot
-        .create_forum_topic(ChatId(chat), HOME_TOPIC_NAME)
-        .await
-    {
-        Ok(t) => {
-            if let Err(e) = shared
-                .store
-                .set_home_topic(user.id, Some(t.thread_id.0 .0))
-                .await
-            {
-                tracing::warn!(error = %e, "could not persist home topic");
-            }
-            let _ = shared
-                .bot
-                .send_message(
-                    ChatId(chat),
-                    "This is your <b>🏠 Tzibbur</b> topic: commands, sign-in and notices happen here. Each of your Tzibbur groups gets its own topic next to it.",
-                )
-                .parse_mode(ParseMode::Html)
-                .message_thread_id(t.thread_id)
-                .await;
-            Some(t.thread_id)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "could not create home topic");
-            None
-        }
-    }
-}
-
-/// Send an HTML control message to the user's home topic (falls back to the chat
-/// root). Recreates the home topic once if it was deleted.
+/// Send an HTML control message to the user's main thread (the command center).
 pub async fn send_home(
     shared: &Shared,
     user: &crate::store::BridgeUser,
@@ -869,30 +822,34 @@ pub async fn send_home(
     keyboard: Option<InlineKeyboardMarkup>,
 ) -> Result<Message> {
     let chat = ChatId(user.telegram_user_id.parse::<i64>()?);
-    let thread = ensure_home_topic(shared, user).await;
-    let build = |thread: Option<ThreadId>| {
-        let mut req = shared
-            .bot
-            .send_message(chat, html.to_owned())
-            .parse_mode(ParseMode::Html);
-        if let Some(t) = thread {
-            req = req.message_thread_id(t);
+    let mut req = shared
+        .bot
+        .send_message(chat, html.to_owned())
+        .parse_mode(ParseMode::Html);
+    if let Some(k) = keyboard {
+        req = req.reply_markup(k);
+    }
+    Ok(req.await?)
+}
+
+/// Earlier builds created a "🏠 Tzibbur" topic per user; delete any that remain.
+pub async fn remove_legacy_home_topics(shared: &Shared) {
+    let users = match shared.store.users_with_home_topic().await {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not list users for home-topic cleanup");
+            return;
         }
-        if let Some(k) = keyboard.clone() {
-            req = req.reply_markup(k);
-        }
-        req
     };
-    match build(thread).await {
-        Ok(m) => Ok(m),
-        Err(e) if thread.is_some() && is_missing_thread(&e) => {
-            let _ = shared.store.set_home_topic(user.id, None).await;
-            let mut fresh = user.clone();
-            fresh.settings = None;
-            let thread = ensure_home_topic(shared, &fresh).await;
-            Ok(build(thread).await?)
+    for u in users {
+        if let (Some(t), Ok(chat)) = (u.home_topic_id(), u.telegram_user_id.parse::<i64>()) {
+            let _ = shared
+                .bot
+                .delete_forum_topic(ChatId(chat), ThreadId(MessageId(t)))
+                .await;
+            let _ = shared.store.set_home_topic(u.id, None).await;
+            tracing::info!(user = u.id, "removed legacy home topic");
         }
-        Err(e) => Err(e.into()),
     }
 }
 

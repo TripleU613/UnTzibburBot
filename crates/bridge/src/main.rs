@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
     telegram::setup_bot_profile(&bot, &app)
         .await
         .context("set bot commands")?;
+    bridge::remove_legacy_home_topics(&shared).await;
     let started = bridge::start_all(&shared, &app.registry).await?;
     tracing::info!(accounts = started, "runtimes started");
 

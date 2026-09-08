@@ -26,14 +26,32 @@ fn from(msg: &Message) -> Result<&TgUser> {
         .ok_or_else(|| anyhow!("message without sender"))
 }
 
-/// Which thread a reply to `msg` belongs in: the thread it came from, else the user's 🏠 home topic.
+/// Which thread a reply to `msg` belongs in: a mapped group topic if the message
+/// came from one, otherwise the main thread (the command center).
 async fn thread_for(app: &App, msg: &Message) -> Option<ThreadId> {
-    if let Some(t) = msg.thread_id {
-        return Some(t);
+    let t = msg.thread_id?;
+    match app
+        .shared
+        .store
+        .conversation_by_topic(msg.chat.id.0, t.0 .0)
+        .await
+    {
+        Ok(Some(_)) => Some(t),
+        _ => None,
     }
-    let tg = msg.from.as_ref()?;
-    let user = app.bridge_user(tg).await.ok()?;
-    crate::bridge::ensure_home_topic(&app.shared, &user).await
+}
+
+/// If `msg` arrived in a thread that is not one of the group topics (a thread
+/// Telegram opened when the user typed from the thread list), delete that thread:
+/// the conversation with the bot lives in the main thread.
+async fn tidy_stray_thread(bot: &BridgeBot, app: &App, msg: &Message) {
+    let Some(t) = msg.thread_id else { return };
+    if thread_for(app, msg).await.is_some() {
+        return;
+    }
+    if let Err(e) = bot.delete_forum_topic(msg.chat.id, t).await {
+        tracing::debug!(error = %e, "could not delete stray thread");
+    }
 }
 
 /// A send_message builder targeted at `thread` (if any).
@@ -70,7 +88,7 @@ async fn say_kb(
     Ok(())
 }
 
-/// Send to the home topic when we only have the user (callbacks, Mini App).
+/// Send to the user's main thread when we only have the user (callbacks, Mini App).
 async fn say_home(
     app: &App,
     tg: &TgUser,
@@ -155,6 +173,7 @@ pub async fn on_command(
         .await?;
         return Ok(());
     }
+    tidy_stray_thread(&bot, &app, &msg).await;
     match cmd {
         Command::Start => {
             app.bridge_user(&tg).await?;
@@ -168,7 +187,7 @@ pub async fn on_command(
                     "⚠️ Your Tzibbur session expired. Use /reconnect to sign in again; your topics will be reused.".to_owned()
                 }
                 _ => format!(
-                    "👋 <b>Tzibbur ↔ Telegram</b>\n\nI turn each of your Tzibbur groups into a topic in this chat, so you can read and reply from Telegram.\n\n• Tzibbur stays the source of truth; I keep only ids and an encrypted session.\n• Messages are plain text (that's all Tzibbur supports).\n\nTap <b>/connect</b> to sign in with your phone number{}. See /privacy for what is (and isn't) stored.",
+                    "👋 <b>Tzibbur ↔ Telegram</b>\n\nI turn each of your Tzibbur groups into a topic in this chat, so you can read and reply from Telegram. This main thread is the command center.\n\n• Tzibbur stays the source of truth; I keep only ids and an encrypted session.\n• Messages are plain text (that's all Tzibbur supports).\n\nTap <b>/connect</b> to sign in with your phone number{}. See /privacy for what is (and isn't) stored.",
                     if app.shared.cfg.public_url.is_some() { ", or use the ≡ menu button for the secure login page" } else { "" }
                 ),
             };
@@ -517,6 +536,7 @@ pub async fn send_phone_prompt(
 }
 
 pub async fn on_phone(bot: BridgeBot, msg: Message, dialogue: Dialog, app: Arc<App>) -> Result<()> {
+    tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?;
     // Shared contact (the button), or typed text.
     let raw = match msg.contact() {
@@ -569,6 +589,7 @@ pub async fn on_name(
     app: Arc<App>,
     phone: String,
 ) -> Result<()> {
+    tidy_stray_thread(&bot, &app, &msg).await;
     let raw = msg.text().unwrap_or_default().trim();
     let display_name = if raw.eq_ignore_ascii_case("skip") || raw == "-" {
         None
@@ -649,6 +670,7 @@ pub async fn on_code(
     app: Arc<App>,
     (challenge_id, phone, display_name, failures): (String, String, Option<String>, u32),
 ) -> Result<()> {
+    tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let code: String = msg
         .text()
@@ -779,6 +801,7 @@ pub async fn on_group_name(
     dialogue: Dialog,
     app: Arc<App>,
 ) -> Result<()> {
+    tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let rt = connected_runtime(&app, &tg).await?;
     match validate_group_name(msg.text().unwrap_or_default()) {
@@ -839,6 +862,7 @@ pub async fn on_group_phones(
     app: Arc<App>,
     (name, category): (String, String),
 ) -> Result<()> {
+    tidy_stray_thread(&bot, &app, &msg).await;
     let tg = from(&msg)?.clone();
     let rt = connected_runtime(&app, &tg).await?;
     let raw = msg.text().unwrap_or_default();
@@ -911,9 +935,14 @@ pub async fn on_message(bot: BridgeBot, msg: Message, app: Arc<App>) -> Result<(
     }
     let tg = from(&msg)?.clone();
     let Some(conv) = resolve_conversation(&app, &msg).await? else {
-        if msg.thread_id.is_none() {
-            say(&bot, &msg, &app, "Reply inside one of your group topics to send a message there. /help for commands.").await?;
-        }
+        tidy_stray_thread(&bot, &app, &msg).await;
+        say(
+            &bot,
+            &msg,
+            &app,
+            "This is the command center — to write to a group, open its topic. /help for commands.",
+        )
+        .await?;
         return Ok(());
     };
     let rt = match connected_runtime(&app, &tg).await {
@@ -979,13 +1008,10 @@ pub async fn on_callback(
     };
     let tg = q.from.clone();
     let dialogue: Dialog = Dialogue::new(storage, chat_id);
-    // Reply where the button was, else in the 🏠 home topic.
-    let thread = match q.regular_message().and_then(|m| m.thread_id) {
-        Some(t) => Some(t),
-        None => match app.bridge_user(&tg).await {
-            Ok(u) => crate::bridge::ensure_home_topic(&app.shared, &u).await,
-            Err(_) => None,
-        },
+    // Reply in the group topic the button lives in, else in the main thread.
+    let thread = match q.regular_message() {
+        Some(m) => thread_for(&app, m).await,
+        None => None,
     };
     let mut ack = String::new();
     match data.as_str() {
