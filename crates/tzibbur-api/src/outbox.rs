@@ -188,7 +188,10 @@ impl OutboxDispatcher {
         self.store.mark_in_flight(&row.client_message_id, now)?;
 
         // A row the server is known to hold already: only verify, never POST again.
-        let send = if row.error_code.as_deref() == Some("client-message-id-reused") {
+        let send = if matches!(
+            row.error_code.as_deref(),
+            Some("client-message-id-reused") | Some("json")
+        ) {
             Err(AppError::ClientMessageIdReused { request_id: None })
         } else {
             self.client
@@ -209,7 +212,9 @@ impl OutboxDispatcher {
                     message: msg,
                 });
             }
-            Err(AppError::ClientMessageIdReused { .. }) => {
+            // `Json` here means the server accepted the POST (2xx) but answered in a shape we
+            // could not decode: the message exists, so verify rather than reject.
+            Err(AppError::ClientMessageIdReused { .. }) | Err(AppError::Json(_)) => {
                 // An earlier attempt got through but we never saw the reply: find it instead of failing.
                 match self.verify_delivered(&row).await {
                     Ok(Some(msg)) => {

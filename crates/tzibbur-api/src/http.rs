@@ -347,7 +347,17 @@ impl TzibburClient {
         if bytes.is_empty() {
             return serde_json::from_value(serde_json::Value::Null).map_err(Into::into);
         }
-        serde_json::from_slice(&bytes).map_err(Into::into)
+        serde_json::from_slice(&bytes).map_err(|e| {
+            let keys = serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|v| {
+                    v.as_object()
+                        .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+                })
+                .unwrap_or_else(|| format!("{} bytes, non-object", bytes.len()));
+            tracing::warn!(error = %e, keys, "tzibbur: response did not match the expected shape");
+            AppError::Json(e.to_string())
+        })
     }
 
     async fn get<T: DeserializeOwned, Q: Serialize + ?Sized>(
@@ -680,9 +690,12 @@ impl TzibburClient {
             client_message_id: client_message_id.to_owned(),
             body: body.to_owned(),
         };
-        let mut m: MessageDto = self
+        // The live reply is not always a bare message object: accept `{message: {...}}`,
+        // `{data: {...}}`, an `{id, seq}` stub, or a `{clientMessageId, seq}` ack.
+        let raw: serde_json::Value = self
             .post(&format!("v1/groups/{group_id}/messages"), &req, true)
             .await?;
+        let mut m = decode_sent_message(raw, group_id, client_message_id, body)?;
         m.group_id.get_or_insert_with(|| group_id.to_owned());
         m.client_message_id
             .get_or_insert_with(|| client_message_id.to_owned());
@@ -713,5 +726,59 @@ impl TzibburClient {
             limit: Option<u32>,
         }
         self.get("v1/pending", Some(&Q { limit })).await
+    }
+}
+
+/// Turn whatever `POST /messages` answered into a `MessageDto`.
+fn decode_sent_message(
+    raw: serde_json::Value,
+    group_id: &str,
+    client_message_id: &str,
+    body: &str,
+) -> Result<MessageDto> {
+    let mut v = raw;
+    for key in ["message", "data", "item", "result"] {
+        if v.get(key).map(|x| x.is_object()).unwrap_or(false) {
+            v = v[key].take();
+        }
+    }
+    if let Ok(m) = serde_json::from_value::<MessageDto>(v.clone()) {
+        return Ok(m);
+    }
+    // Minimal ack: need at least a seq or an id to be useful.
+    let obj = v.as_object().cloned().unwrap_or_default();
+    let seq = obj.get("seq").and_then(|x| x.as_i64());
+    let id = obj
+        .get("id")
+        .or_else(|| obj.get("messageId"))
+        .and_then(|x| x.as_str())
+        .map(str::to_owned);
+    match (id, seq) {
+        (Some(id), Some(seq)) => Ok(MessageDto {
+            id,
+            group_id: Some(group_id.to_owned()),
+            seq,
+            sender_id: obj
+                .get("senderId")
+                .and_then(|x| x.as_str())
+                .unwrap_or_default()
+                .to_owned(),
+            body: obj
+                .get("body")
+                .and_then(|x| x.as_str())
+                .unwrap_or(body)
+                .to_owned(),
+            client_message_id: Some(client_message_id.to_owned()),
+            created_at: obj
+                .get("createdAt")
+                .and_then(crate::models::epoch_ms_from_value),
+            extra: obj,
+        }),
+        _ => Err(AppError::Json(format!(
+            "send reply has no usable message (keys: {})",
+            v.as_object()
+                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
+                .unwrap_or_else(|| v.to_string())
+        ))),
     }
 }

@@ -32,7 +32,7 @@ pub fn de_epoch_ms_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D
         .ok_or_else(|| de::Error::custom(format!("invalid timestamp: {v}")))
 }
 
-pub(crate) fn epoch_ms_from_value(v: &Value) -> Option<i64> {
+pub fn epoch_ms_from_value(v: &Value) -> Option<i64> {
     match v {
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
         Value::String(s) => {
