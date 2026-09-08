@@ -613,18 +613,36 @@ impl AccountRuntime {
         match req.await {
             Ok(m) => Ok(m),
             Err(e) if conv.topic_id().is_some() && is_missing_thread(&e) => {
-                tracing::warn!(
-                    account = self.account_id,
-                    conv = conv.id,
-                    "topic missing; recreating"
-                );
-                let new_topic = self
-                    .create_topic(conv.name.as_deref().unwrap_or("Tzibbur"))
-                    .await;
-                self.shared
+                // Another event may have replaced the topic already: prefer the stored mapping
+                // over creating a second topic.
+                let stored = self
+                    .shared
                     .store
-                    .set_conversation_topic(conv.id, new_topic)
-                    .await?;
+                    .conversation(conv.id)
+                    .await?
+                    .and_then(|c| c.topic_id());
+                let new_topic = match stored {
+                    Some(t) if Some(t) != conv.topic_id() => {
+                        tracing::info!(
+                            account = self.account_id,
+                            conv = conv.id,
+                            "topic was already recreated; reusing"
+                        );
+                        Some(t)
+                    }
+                    _ => {
+                        tracing::warn!(
+                            account = self.account_id,
+                            conv = conv.id,
+                            "topic missing; recreating"
+                        );
+                        let t = self
+                            .create_topic(conv.name.as_deref().unwrap_or("Tzibbur"))
+                            .await;
+                        self.shared.store.set_conversation_topic(conv.id, t).await?;
+                        t
+                    }
+                };
                 let mut req = self
                     .shared
                     .bot
