@@ -3,7 +3,7 @@ name = "tzibbur-api"
 version = "0.1.0"
 edition = "2021"
 description = "Rust client for the Tzibbur API (REST + WebSocket), with local store, sync engine and outbox."
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [lib]
 name = "tzibbur_api"

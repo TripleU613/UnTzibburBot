@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="760" viewBox="0 0 390 760" font-family="-apple-system, Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs><clipPath id="r"><rect width="390" height="760" rx="44"/></clipPath></defs>
+  <g clip-path="url(#r)">
+    <rect width="390" height="760" fill="#0E1621"/>
+    <rect width="390" height="96" fill="#17212B"/>
+    <text x="20" y="40" font-size="15" fill="#8FA5B9">‹ Topics</text>
+    <circle cx="170" cy="44" r="20" fill="#1FD1C4"/><text x="170" y="50" text-anchor="middle" font-size="16" font-weight="700" fill="#0B1414">F</text>
+    <text x="200" y="40" font-size="17" font-weight="600" fill="#FFFFFF">Family</text>
+    <text x="200" y="62" font-size="13" fill="#6D8AA5">TzibburBot · 5 members</text>
+    <g font-size="15">
+      <rect x="150" y="120" width="100" height="40" rx="16" fill="#2B5278"/>
+      <text x="164" y="146" fill="#FFFFFF">/group</text>
+      <rect x="16" y="176" width="300" height="130" rx="16" fill="#182533"/>
+      <text x="30" y="202" font-weight="700" fill="#FFFFFF">Family</text>
+      <text x="30" y="226" font-size="14" fill="#C9D6E2">family · 5 members · you are an admin</text>
+      <text x="30" y="250" font-size="14" fill="#C9D6E2">Posting: <tspan font-weight="600" fill="#FFFFFF">everyone</tspan>. Adding members: <tspan font-weight="600" fill="#FFFFFF">admins</tspan>.</text>
+      <text x="30" y="274" font-size="14" fill="#C9D6E2">Messages up to 1000 characters.</text>
+      <text x="302" y="298" text-anchor="end" font-size="11" fill="#6D8AA5">12:50</text>
+    </g>
+    <!-- inline keyboard -->
+    <g font-size="14" fill="#FFFFFF" text-anchor="middle">
+      <rect x="16" y="314" width="146" height="40" rx="8" fill="#1F3448"/><text x="89" y="339">Members</text>
+      <rect x="170" y="314" width="146" height="40" rx="8" fill="#1F3448"/><text x="243" y="339">Add members</text>
+      <rect x="16" y="360" width="300" height="40" rx="8" fill="#1F3448"/><text x="166" y="385">Rename</text>
+      <rect x="16" y="406" width="146" height="40" rx="8" fill="#1F3448"/><text x="89" y="431">Post: everyone</text>
+      <rect x="170" y="406" width="146" height="40" rx="8" fill="#1F3448"/><text x="243" y="431">Add: admins</text>
+      <rect x="16" y="452" width="146" height="40" rx="8" fill="#1F3448"/><text x="89" y="477">Mute</text>
+      <rect x="170" y="452" width="146" height="40" rx="8" fill="#1F3448"/><text x="243" y="477">Leave</text>
+      <rect x="16" y="498" width="300" height="40" rx="8" fill="#1F3448"/><text x="166" y="523">Delete group…</text>
+    </g>
+    <rect x="0" y="700" width="390" height="60" fill="#17212B"/>
+    <rect x="16" y="712" width="300" height="36" rx="18" fill="#242F3D"/>
+    <text x="32" y="736" font-size="14" fill="#6D8AA5">Message</text>
+    <circle cx="352" cy="730" r="18" fill="#5288C1"/>
+  </g>
+</svg>

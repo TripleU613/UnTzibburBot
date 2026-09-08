@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/TripleU613/UnTzibburBot/actions/workflows/ci.yml"><img src="https://github.com/TripleU613/UnTzibburBot/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/TripleU613/UnTzibburBot/actions/workflows/deploy.yml"><img src="https://github.com/TripleU613/UnTzibburBot/actions/workflows/deploy.yml/badge.svg" alt="Deploy"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/rust-stable-orange.svg" alt="Rust">
 </p>
 
@@ -16,15 +16,17 @@
 
 ---
 
+<p align="center">
+  <img src="assets/screens/trio.png" alt="Topics, a group conversation, and the group card" width="900">
+</p>
+
 ## Use it
 
 1. Open **[@TzibburBot](https://t.me/TzibburBot)** and send `/start`.
 2. Send `/connect` and your phone number. Tzibbur texts you a code; send it back.
 3. Your groups appear as topics. Type in a topic to post to that group.
 
-<p align="center"><img src="assets/topics.png" alt="Your groups as topics" width="420"></p>
-
-Inside a topic, `/group` manages the group: members, permissions, rename, leave. `/newgroup` creates one. `/help` lists everything.
+Inside a topic, `/group` opens the card above: members, permissions, rename, leave. `/newgroup` creates a group. `/help` lists everything.
 
 ## Privacy
 
@@ -43,4 +45,4 @@ One image, Postgres and Directus alongside. Enable **Threaded Mode** for your bo
 
 Rust, [teloxide](https://github.com/teloxide/teloxide), [Directus](https://directus.io), and a from-scratch Tzibbur client ([`crates/tzibbur-api`](crates/tzibbur-api)).
 
-<p align="center"><sub>MIT licensed. Not affiliated with Tzibbur.</sub></p>
+<p align="center"><sub>Free software under the AGPL-3.0: use it, change it, share it, keep it open. Not affiliated with Tzibbur.</sub></p>

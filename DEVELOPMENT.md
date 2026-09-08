@@ -88,6 +88,10 @@ Tzibbur is the source of truth; nothing the bridge stores is needed to recover m
 | Bridge `/data` | sync cache, text until delivered | nothing | rebuilt from Tzibbur on connect |
 | Telegram | the topics | sends retried by the flush | a deleted topic is recreated |
 
+## License
+
+AGPL-3.0-or-later. Anyone may use, study, change and redistribute the code, including running it as a service, provided the complete corresponding source of their version is made available to its users under the same license. A closed or proprietary fork is not permitted.
+
 ## Conventions
 
 - `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test --workspace` must pass (CI enforces).

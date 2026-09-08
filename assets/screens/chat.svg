@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="390" height="760" viewBox="0 0 390 760" font-family="-apple-system, Inter, Segoe UI, Roboto, Helvetica, Arial, sans-serif">
+  <defs><clipPath id="r"><rect width="390" height="760" rx="44"/></clipPath></defs>
+  <g clip-path="url(#r)">
+    <rect width="390" height="760" fill="#0E1621"/>
+    <rect width="390" height="96" fill="#17212B"/>
+    <text x="20" y="40" font-size="15" fill="#8FA5B9">‹ Topics</text>
+    <circle cx="170" cy="44" r="20" fill="#1FD1C4"/><text x="170" y="50" text-anchor="middle" font-size="16" font-weight="700" fill="#0B1414">F</text>
+    <text x="200" y="40" font-size="17" font-weight="600" fill="#FFFFFF">Family</text>
+    <text x="200" y="62" font-size="13" fill="#6D8AA5">TzibburBot · 5 members</text>
+    <!-- date pill -->
+    <rect x="160" y="112" width="70" height="22" rx="11" fill="#1C2A3A"/><text x="195" y="128" text-anchor="middle" font-size="12" fill="#8FA5B9">Today</text>
+    <!-- incoming -->
+    <g font-size="15">
+      <rect x="16" y="150" width="262" height="78" rx="16" fill="#182533"/>
+      <text x="30" y="174" font-weight="600" fill="#5FE3D8">Miriam</text>
+      <text x="30" y="198" fill="#FFFFFF">Are we still on for Sunday?</text>
+      <text x="30" y="218" fill="#FFFFFF">Ma wants a head count.</text>
+      <text x="262" y="220" text-anchor="end" font-size="11" fill="#6D8AA5">12:41</text>
+
+      <rect x="16" y="240" width="200" height="56" rx="16" fill="#182533"/>
+      <text x="30" y="264" font-weight="600" fill="#5FE3D8">Dovid</text>
+      <text x="30" y="286" fill="#FFFFFF">Count me in.</text>
+      <text x="204" y="288" text-anchor="end" font-size="11" fill="#6D8AA5">12:43</text>
+
+      <!-- outgoing -->
+      <rect x="150" y="310" width="224" height="56" rx="16" fill="#2B5278"/>
+      <text x="164" y="336" fill="#FFFFFF">We're in, plus the kids.</text>
+      <text x="360" y="358" text-anchor="end" font-size="11" fill="#9FC1E4">12:44 ✓✓</text>
+
+      <rect x="16" y="380" width="238" height="56" rx="16" fill="#182533"/>
+      <text x="30" y="404" font-weight="600" fill="#5FE3D8">Miriam</text>
+      <text x="30" y="426" fill="#FFFFFF">Perfect, that makes 11.</text>
+      <text x="242" y="428" text-anchor="end" font-size="11" fill="#6D8AA5">12:45</text>
+
+      <!-- system note -->
+      <rect x="95" y="456" width="200" height="24" rx="12" fill="#1C2A3A"/>
+      <text x="195" y="473" text-anchor="middle" font-size="12" fill="#8FA5B9">Shloimy joined</text>
+    </g>
+    <rect x="0" y="700" width="390" height="60" fill="#17212B"/>
+    <rect x="16" y="712" width="300" height="36" rx="18" fill="#242F3D"/>
+    <text x="32" y="736" font-size="14" fill="#6D8AA5">Message</text>
+    <circle cx="352" cy="730" r="18" fill="#5288C1"/>
+  </g>
+</svg>

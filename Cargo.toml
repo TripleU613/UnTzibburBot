@@ -4,7 +4,7 @@ members = ["crates/tzibbur-api", "crates/bridge"]
 
 [workspace.package]
 edition = "2021"
-license = "MIT"
+license = "AGPL-3.0-or-later"
 
 [profile.release]
 lto = "thin"
