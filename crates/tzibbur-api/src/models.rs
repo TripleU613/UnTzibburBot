@@ -156,6 +156,11 @@ impl<'de, T: de::DeserializeOwned> Deserialize<'de> for Page<T> {
 pub enum GroupKind {
     Standard,
     System,
+    /// The Tzibbur Management thread (rules acknowledgement). Unlike `system`, the
+    /// user replies in it.
+    Rules,
+    /// Any kind this crate does not know. The official guide requires rendering it
+    /// as an ordinary group, never hiding it.
     #[default]
     Unknown,
 }
@@ -166,6 +171,7 @@ impl GroupKind {
         match self {
             GroupKind::Standard => "standard",
             GroupKind::System => "system",
+            GroupKind::Rules => "rules",
             GroupKind::Unknown => "unknown",
         }
     }
@@ -173,6 +179,7 @@ impl GroupKind {
         match s.to_ascii_lowercase().as_str() {
             "standard" => GroupKind::Standard,
             "system" => GroupKind::System,
+            "rules" => GroupKind::Rules,
             _ => GroupKind::Unknown,
         }
     }
@@ -240,6 +247,8 @@ impl fmt::Display for Role {
 pub enum AccountKind {
     #[default]
     Person,
+    /// An API user (a school, shul, …): no phone number, labelled by display name.
+    Organization,
     Service,
     #[serde(untagged)]
     Other(String),
@@ -366,7 +375,7 @@ pub struct Device {
     pub platform: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
-    /// e.g. `"Pixel 7"`.
+    /// e.g. `"UnTzibburBot (Telegram bridge)"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -620,11 +629,14 @@ impl From<LegalDocumentWire> for LegalDocument {
 pub struct GroupLimits {
     #[serde(default)]
     pub member_cap: Option<u32>,
-    /// Observed as 1000 on the live server (the app's compiled default is 2000).
+    /// Longest message the caller may type in this group (resolved for their role).
     #[serde(default)]
     pub message_max_length: Option<u32>,
     #[serde(default)]
     pub min_members_to_post: Option<u32>,
+    /// How many admins the group may have at its current size.
+    #[serde(default)]
+    pub max_admins: Option<u32>,
 }
 
 /// `settings` object on the wire.
@@ -635,6 +647,9 @@ pub struct GroupSettings {
     pub who_can_post: Option<Permission>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub who_can_add_members: Option<Permission>,
+    /// Whether members may set a per-group name with `#name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub who_can_change_name: Option<Permission>,
 }
 
 /// A group as returned by the server. Live shape:
@@ -818,7 +833,7 @@ impl UpdateGroupRequest {
             name: None,
             settings: Some(GroupSettings {
                 who_can_post: Some(p),
-                who_can_add_members: None,
+                ..Default::default()
             }),
         }
     }
@@ -826,8 +841,8 @@ impl UpdateGroupRequest {
         Self {
             name: None,
             settings: Some(GroupSettings {
-                who_can_post: None,
                 who_can_add_members: Some(p),
+                ..Default::default()
             }),
         }
     }
@@ -912,7 +927,8 @@ pub struct AddMembersOutcome {
     pub added: Vec<AddedMember>,
     #[serde(default)]
     pub not_found: Vec<String>,
-    #[serde(default)]
+    /// `alreadyMembers` on the wire (E.164 phones).
+    #[serde(default, alias = "alreadyMembers")]
     pub already_member: Vec<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -1003,7 +1019,7 @@ pub struct MessagesPage {
 pub struct SendMessageRequest {
     /// UUID used for deduplication and echo detection.
     pub client_message_id: String,
-    /// Max 2000 code points.
+    /// At most `Group.limits.messageMaxLength` code points (1000 by default).
     pub body: String,
 }
 
@@ -1011,6 +1027,82 @@ pub struct SendMessageRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AckRequest {
     pub seq: i64,
+}
+
+/// Body of `POST /v1/groups/{id}/read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadRequest {
+    pub seq: i64,
+}
+
+/// Reply to an in-chat `#command` (`200 {"command": {...}}`). Nothing was stored:
+/// no seq was consumed and nothing is delivered or echoed to anyone.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandResult {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub ok: bool,
+    /// Stable machine code (`member_added`, `not_allowed`, `system_thread`, …).
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub params: Map<String, Value>,
+    /// Human-readable reply, to be shown as a Tzibbur System bubble.
+    #[serde(default)]
+    pub text: String,
+}
+
+/// What `POST /v1/groups/{id}/messages` produced.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SendOutcome {
+    /// A stored message. `duplicate` is `true` when a retry with the same
+    /// `clientMessageId` returned the original.
+    Stored {
+        message: MessageDto,
+        duplicate: bool,
+    },
+    /// The body was an in-chat command; the server executed it instead of storing it.
+    Command(CommandResult),
+}
+
+/// `GET /v1/capabilities`: the limits, auth settings and feature switches in force
+/// for the caller. Everything is optional and unknown keys are kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Capabilities {
+    #[serde(default)]
+    pub subject: Option<Value>,
+    #[serde(default)]
+    pub device: Option<Value>,
+    #[serde(default)]
+    pub plan: Option<Value>,
+    #[serde(default)]
+    pub limits: Map<String, Value>,
+    #[serde(default)]
+    pub auth: Map<String, Value>,
+    #[serde(default)]
+    pub features: Map<String, Value>,
+    #[serde(default)]
+    pub realtime: Map<String, Value>,
+    /// `{locked, threadId}` while the user owes a rules acknowledgement; advisory only.
+    #[serde(default)]
+    pub rules: Option<Value>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl Capabilities {
+    /// A numeric entry of `limits`, e.g. `"messageMaxLength"`.
+    pub fn limit(&self, key: &str) -> Option<u64> {
+        self.limits.get(key).and_then(Value::as_u64)
+    }
+    /// A boolean entry of `features`, e.g. `"commands"`.
+    pub fn feature(&self, key: &str) -> Option<bool> {
+        self.features.get(key).and_then(Value::as_bool)
+    }
 }
 
 // ---------------------------------------------------------------------------

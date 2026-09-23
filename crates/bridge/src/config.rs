@@ -36,8 +36,8 @@ pub struct Config {
     pub use_webhook: bool,
     /// Telegram user id of the operator (`BRIDGE_ADMIN_TELEGRAM_ID`): receives `/stats` and error alerts.
     pub admin_telegram_id: Option<i64>,
-    /// How the bridge presents itself to Tzibbur (`TZIBBUR_PLATFORM`, `TZIBBUR_DEVICE_MODEL`,
-    /// `TZIBBUR_APP_VERSION`, `TZIBBUR_OS_VERSION`); defaults to the Android app on a Pixel 7.
+    /// What the bridge reports at enrollment (`TZIBBUR_PLATFORM`, default `android`;
+    /// `TZIBBUR_DEVICE_MODEL`, default `UnTzibburBot (Telegram bridge)`).
     pub device: tzibbur_api::DeviceInfo,
 }
 
@@ -98,14 +98,14 @@ impl Config {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             admin_telegram_id: env("BRIDGE_ADMIN_TELEGRAM_ID").and_then(|v| v.parse().ok()),
-            device: {
-                let d = tzibbur_api::DeviceInfo::android();
-                tzibbur_api::DeviceInfo {
-                    platform: env("TZIBBUR_PLATFORM").unwrap_or(d.platform),
-                    model: env("TZIBBUR_DEVICE_MODEL").unwrap_or(d.model),
-                    app_version: env("TZIBBUR_APP_VERSION").unwrap_or(d.app_version),
-                    os_version: env("TZIBBUR_OS_VERSION").unwrap_or(d.os_version),
-                }
+            // Reported at enrollment as `platform` / `deviceModel`. The official guide asks
+            // for an accurate, stable model string; `web` would mean 15-minute tokens and a
+            // captcha, so the bridge enrolls as a native (android) device.
+            device: tzibbur_api::DeviceInfo {
+                platform: env("TZIBBUR_PLATFORM").unwrap_or_else(|| "android".into()),
+                model: env("TZIBBUR_DEVICE_MODEL")
+                    .unwrap_or_else(|| "UnTzibburBot (Telegram bridge)".into()),
+                app_version: env!("CARGO_PKG_VERSION").into(),
             },
         })
     }

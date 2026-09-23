@@ -234,9 +234,13 @@ async fn main() {
             "POST /v1/groups/{id}/messages",
             "rejected (no longer a member)",
         ),
-        Ok(m) => r.ok(
+        Ok(SendOutcome::Stored { message, .. }) => r.ok(
             "POST /v1/groups/{id}/messages",
-            format!("sent seq {}", m.seq),
+            format!("sent seq {}", message.seq),
+        ),
+        Ok(SendOutcome::Command(c)) => r.ok(
+            "POST /v1/groups/{id}/messages",
+            format!("command reply {}", c.code),
         ),
         Err(e) => r.err("POST /v1/groups/{id}/messages", e),
     }

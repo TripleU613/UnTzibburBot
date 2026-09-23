@@ -1,4 +1,7 @@
-//! End-to-end test against an in-process mock of the Tzibbur API (REST + WS).
+//! End-to-end test against an in-process mock of the Tzibbur API (REST + WS), modelled
+//! on the official protocol (<https://api.tzibbur.me/integration>): the socket pushes
+//! the backlog after `hello`, holds the next batch for a group until the previous one
+//! is acked on the socket, and group frames carry their fields at the top level.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
@@ -19,7 +22,15 @@ const TOKEN: &str = "test-token";
 #[derive(Clone)]
 struct Mock {
     seq: Arc<AtomicI64>,
+    /// Acks received on the WebSocket.
     acks: Arc<Mutex<Vec<(String, i64)>>>,
+    /// Acks received over REST (`POST /v1/groups/{id}/ack`).
+    rest_acks: Arc<Mutex<Vec<(String, i64)>>>,
+    /// `read` frames received on the WebSocket.
+    reads: Arc<Mutex<Vec<(String, i64)>>>,
+    /// Polling-style REST reads: `GET /v1/pending` and history paging.
+    pending_hits: Arc<AtomicI64>,
+    history_hits: Arc<AtomicI64>,
     sent: Arc<Mutex<Vec<Value>>>,
     push: Arc<Mutex<Option<mpsc::UnboundedSender<Value>>>>,
     unauthorized_hits: Arc<AtomicI64>,
@@ -126,10 +137,11 @@ async fn set_role(Path((_g, uid)): Path<(String, String)>, Json(body): Json<Valu
     StatusCode::NO_CONTENT.into_response()
 }
 
-async fn pending(h: HeaderMap) -> Response {
+async fn pending(h: HeaderMap, State(m): State<Mock>) -> Response {
     if !authed(&h) {
         return problem(StatusCode::UNAUTHORIZED, "unauthorized");
     }
+    m.pending_hits.fetch_add(1, Ordering::SeqCst);
     Json(json!({"messages": [
         {"groupId": "g1", "messages": [
             {"id": "m1", "seq": 1, "senderId": "u2", "body": "hello from pending", "createdAt": 1000},
@@ -144,6 +156,13 @@ async fn send_message(
     State(m): State<Mock>,
     Json(body): Json<Value>,
 ) -> Response {
+    if body["body"].as_str().unwrap_or("").starts_with("#help") {
+        return Json(
+            json!({"command": {"name": "help", "ok": true, "code": "help",
+            "params": {}, "text": "Commands: #add, #exit, #mute, #unmute, #help"}}),
+        )
+        .into_response();
+    }
     if body["body"].as_str().unwrap_or("").contains("BAD") {
         return problem(StatusCode::BAD_REQUEST, "invalid-message");
     }
@@ -157,13 +176,23 @@ async fn send_message(
     m.sent.lock().unwrap().push(msg.clone());
     // Echo over WS too, as the real server does.
     if let Some(tx) = m.push.lock().unwrap().as_ref() {
-        let _ = tx.send(json!({"type": "messages", "groupId": gid, "messages": [msg]}));
+        let _ = tx
+            .send(json!({"type": "messages", "groupId": gid, "messages": [msg], "hasMore": false}));
     }
-    Json(msg).into_response()
+    (
+        StatusCode::CREATED,
+        Json(json!({"message": msg, "duplicate": false})),
+    )
+        .into_response()
+}
+
+async fn history(State(m): State<Mock>) -> Response {
+    m.history_hits.fetch_add(1, Ordering::SeqCst);
+    Json(json!({"items": [], "nextAfterSeq": null, "nextBeforeSeq": null})).into_response()
 }
 
 async fn ack(Path(gid): Path<String>, State(m): State<Mock>, Json(body): Json<Value>) -> Response {
-    m.acks
+    m.rest_acks
         .lock()
         .unwrap()
         .push((gid, body["seq"].as_i64().unwrap()));
@@ -186,33 +215,24 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
     *m.push.lock().unwrap() = Some(tx);
     socket
         .send(Message::Text(
-            json!({"type": "hello", "version": 1}).to_string(),
+            json!({"type": "hello", "protocolVersion": 1, "userId": "me", "deviceId": "dev1",
+                "limits": {"heartbeatSeconds": 30, "maxConnectionsPerDevice": 3, "maxFrameBytes": 16384}})
+            .to_string(),
         ))
         .await
         .unwrap();
-    // Push a live message and a group event right away.
+    // Automatic catch-up: the first batch of the backlog, with more to come.
     socket
         .send(Message::Text(
-            json!({"type": "messages", "groupId": "g1", "messages": [
-                {"id": "m3", "seq": 3, "senderId": "u2", "body": "live!", "createdAt": 3000}
+            json!({"type": "messages", "groupId": "g1", "hasMore": true, "messages": [
+                {"id": "m1", "groupId": "g1", "seq": 1, "senderId": "u2", "body": "Other: hello", "createdAt": 1000},
+                {"id": "m2", "groupId": "g1", "seq": 2, "senderId": "u2", "body": "Other: second", "createdAt": 2000}
             ]})
             .to_string(),
         ))
         .await
         .unwrap();
-    socket
-        .send(Message::Text(
-            json!({"type": "group", "event": "group-updated", "payload": {"groupId": "g1", "name": "Alpha Renamed"}}).to_string(),
-        ))
-        .await
-        .unwrap();
-    socket
-        .send(Message::Text(
-            json!({"type": "group", "event": "member-added", "payload": {"groupId": "g1",
-                "member": {"userId": "u9", "displayName": "Nine", "role": "MEMBER", "joinedAt": 9}}}).to_string(),
-        ))
-        .await
-        .unwrap();
+    let mut rest_of_backlog_sent = false;
     loop {
         tokio::select! {
             Some(v) = rx.recv() => { if socket.send(Message::Text(v.to_string())).await.is_err() { break; } }
@@ -221,7 +241,26 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
                     let v: Value = serde_json::from_str(&t).unwrap();
                     match v["type"].as_str() {
                         Some("ping") => { let _ = socket.send(Message::Text(json!({"type": "pong"}).to_string())).await; }
-                        Some("ack") => m.acks.lock().unwrap().push((v["groupId"].as_str().unwrap().to_owned(), v["seq"].as_i64().unwrap())),
+                        Some("ack") => {
+                            let (g, seq) = (v["groupId"].as_str().unwrap().to_owned(), v["seq"].as_i64().unwrap());
+                            m.acks.lock().unwrap().push((g.clone(), seq));
+                            // The next batch for a group is released only by an ack on the socket.
+                            if g == "g1" && seq == 2 && !rest_of_backlog_sent {
+                                rest_of_backlog_sent = true;
+                                for frame in [
+                                    json!({"type": "messages", "groupId": "g1", "hasMore": false, "messages": [
+                                        {"id": "m3", "groupId": "g1", "seq": 3, "senderId": "u2", "body": "Other: live!", "createdAt": 3000}
+                                    ]}),
+                                    json!({"type": "group", "event": "group-updated", "groupId": "g1", "name": "Alpha Renamed",
+                                        "settings": {"whoCanPost": "everyone", "whoCanAddMembers": "admins"}, "actorId": "u2"}),
+                                    json!({"type": "group", "event": "member-added", "groupId": "g1", "userId": "u9",
+                                        "role": "member", "joinedSeq": 3, "actorId": "u2"}),
+                                ] {
+                                    let _ = socket.send(Message::Text(frame.to_string())).await;
+                                }
+                            }
+                        }
+                        Some("read") => m.reads.lock().unwrap().push((v["groupId"].as_str().unwrap().to_owned(), v["seq"].as_i64().unwrap())),
                         _ => {}
                     }
                 }
@@ -236,6 +275,10 @@ async fn spawn_server() -> (String, Mock) {
     let mock = Mock {
         seq: Arc::new(AtomicI64::new(10)),
         acks: Default::default(),
+        rest_acks: Default::default(),
+        reads: Default::default(),
+        pending_hits: Default::default(),
+        history_hits: Default::default(),
         sent: Default::default(),
         push: Default::default(),
         unauthorized_hits: Default::default(),
@@ -251,7 +294,7 @@ async fn spawn_server() -> (String, Mock) {
             "/v1/groups/:id/members/:uid",
             axum::routing::patch(set_role),
         )
-        .route("/v1/groups/:id/messages", post(send_message))
+        .route("/v1/groups/:id/messages", post(send_message).get(history))
         .route("/v1/groups/:id/ack", post(ack))
         .route("/v1/pending", get(pending))
         .route("/v1/legal/:key", get(legal))
@@ -390,7 +433,8 @@ async fn sync_engine_end_to_end() {
     let mut events = sync.subscribe();
     sync.start();
 
-    // Wait until connected and caught up: pending (m1, m2) + live (m3).
+    // Wait until connected and caught up: the pushed backlog (m1, m2), then m3, which the
+    // mock releases only after the first batch was acked on the socket.
     wait_for(
         || store.max_seq("g1").unwrap() == Some(3),
         "messages m1..m3",
@@ -423,11 +467,19 @@ async fn sync_engine_end_to_end() {
     let g1 = unread.iter().find(|g| g.group.id == "g1").unwrap();
     assert_eq!(g1.unread_count, 3);
 
-    // Ack over the socket.
-    sync.mark_read("g1", 3).await.unwrap();
+    // Every socket batch is acked on the socket with its last seq.
     wait_for(
         || mock.acks.lock().unwrap().contains(&("g1".to_string(), 3)),
         "ws ack",
+    )
+    .await;
+    assert!(mock.acks.lock().unwrap().contains(&("g1".to_string(), 2)));
+
+    // Reading is a `read` frame, not an ack.
+    sync.mark_read("g1", 3).await.unwrap();
+    wait_for(
+        || mock.reads.lock().unwrap().contains(&("g1".to_string(), 3)),
+        "ws read",
     )
     .await;
     assert_eq!(store.get_group("g1").unwrap().unwrap().last_read_seq, 3);
@@ -500,6 +552,46 @@ async fn sync_engine_end_to_end() {
         "flaky confirmed",
     )
     .await;
+
+    // An in-chat command is executed, not stored: no seq, the outbox row goes away.
+    let mut outbox_events = sync.outbox().subscribe();
+    let cmd = sync.send_message("g1", "#help").unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Ok(OutboxEvent::Command {
+                result,
+                client_message_id,
+                ..
+            }) = outbox_events.recv().await
+            {
+                if client_message_id == cmd.client_message_id {
+                    return result;
+                }
+            }
+        }
+    })
+    .await
+    .expect("command reply");
+    assert_eq!(reply.code, "help");
+    assert!(store.get_outbox(&cmd.client_message_id).unwrap().is_none());
+    assert_eq!(store.command_replies("g1").unwrap().len(), 1);
+
+    // While the socket is up nothing is polled: no /v1/pending, no history paging and
+    // no REST acks. (This is the load the unofficial client used to put on the server.)
+    assert_eq!(
+        mock.pending_hits.load(Ordering::SeqCst),
+        0,
+        "GET /v1/pending while connected"
+    );
+    assert_eq!(
+        mock.history_hits.load(Ordering::SeqCst),
+        0,
+        "history paging while connected"
+    );
+    assert!(
+        mock.rest_acks.lock().unwrap().is_empty(),
+        "REST acks while connected"
+    );
 
     // We saw NewMessages / EchoConfirmed events.
     let mut saw_new = false;

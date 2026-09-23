@@ -1,7 +1,11 @@
 //! # tzibbur-api
 //!
-//! Rust client for the Tzibbur group-messaging API, reconstructed from the
-//! reverse-engineered Android app (`com.tzibbur.app` 0.1.0).
+//! Rust client for the Tzibbur group-messaging API, built against the official
+//! integration guide (<https://api.tzibbur.me/integration>) and OpenAPI spec
+//! (<https://api.tzibbur.me/docs/openapi.json>).
+//!
+//! Live delivery is push-only: one WebSocket per device, acked batch by batch. The
+//! crate makes no periodic REST requests while that socket is up.
 //!
 //! | Layer | Module |
 //! |---|---|
@@ -15,7 +19,7 @@
 //! | Sync engine (WS + catch-up + group reconcile) | [`sync`] |
 //! | Session persistence, wipe on 401, prefs, legal | [`session`] |
 //! | Validation use cases | [`validation`] |
-//! | Recovered constants | [`constants`] |
+//! | Constants and default limits | [`constants`] |
 //!
 //! ```no_run
 //! use tzibbur_api::prelude::*;
@@ -67,7 +71,7 @@ pub mod prelude {
         MessageEntity, OutboxEntity, OutboxState, OutgoingState, SqliteStore, StoreChange,
     };
     pub use crate::sync::{
-        MemberObservationRegistry, MemberRefreshPolicy, SyncEngine, SyncEvent, SyncState,
+        AckVia, MemberObservationRegistry, MemberRefreshPolicy, SyncEngine, SyncEvent, SyncState,
     };
     pub use crate::validation::*;
     pub use crate::ws::{

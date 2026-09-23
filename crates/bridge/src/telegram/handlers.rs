@@ -490,7 +490,7 @@ async fn on_command_inner(
                             seen
                         ));
                     }
-                    out.push_str("\nThe bridge itself shows up as one of these (android · Pixel 7 by default).");
+                    out.push_str("\nThe bridge itself shows up as one of these (android · UnTzibburBot (Telegram bridge) by default).");
                     say(&bot, &msg, &app, out).await?;
                 }
                 Err(e) => say(&bot, &msg, &app, format!("Could not list devices: {}", escape_html(&friendly(&ae(e))))).await?,

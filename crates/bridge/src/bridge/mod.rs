@@ -33,7 +33,7 @@ use tzibbur_api::prelude::*;
 
 pub type BridgeBot = Throttle<Bot>;
 
-/// Live Tzibbur limit observed on the server (the app's compiled default is 2000).
+/// Tzibbur's default message limit (`limits.messageMaxLength`); a group may allow less.
 pub const MAX_OUTBOUND_CHARS: usize = 1000;
 
 /// Shared services every runtime needs.
@@ -145,6 +145,7 @@ impl AccountRuntime {
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
         let client = TzibburClient::builder()
             .base_url(shared.cfg.tzibbur_base_url.clone())
+            .device(shared.cfg.device.clone())
             .token(token)
             .user_agent(format!(
                 "tzibbur-telegram-bridge/{}",
@@ -299,6 +300,13 @@ impl AccountRuntime {
             SyncEvent::CaughtUp => {
                 self.reconcile_topics().await?;
             }
+            SyncEvent::GroupJoined { group_id } => {
+                if self.settings().auto_topics {
+                    if let Some(g) = self.local.get_group(&group_id)? {
+                        self.ensure_conversation(&g).await?;
+                    }
+                }
+            }
             SyncEvent::NewMessages { group_id, messages } => {
                 self.forward_messages(&group_id, messages).await?
             }
@@ -377,6 +385,8 @@ impl AccountRuntime {
                 {
                     let who = if member.user_id == self.tzibbur_user_id {
                         "You".to_owned()
+                    } else if member.display_name.is_empty() {
+                        "A member".to_owned()
                     } else {
                         member.display_name.clone()
                     };
@@ -960,6 +970,7 @@ impl AccountRuntime {
             settings: Some(tzibbur_api::models::GroupSettings {
                 who_can_post: who_can_post.clone(),
                 who_can_add_members: who_can_add.clone(),
+                ..Default::default()
             }),
         };
         self.client
@@ -1153,6 +1164,8 @@ impl AccountRuntime {
                                 ),
                                 Err(_) => "the group is too small to post in yet; I'll resend once more members join".to_owned(),
                             },
+                            "posting-not-allowed" => "only admins can post in this group".to_owned(),
+                            "device-blocked" => "this device was blocked by Tzibbur".to_owned(),
                             "forbidden" => match self.client.get_group(&conv.group_id).await {
                                 Ok(g) if (g.member_count as usize) < g.limits.as_ref().and_then(|l| l.min_members_to_post).unwrap_or(0) as usize => format!(
                                     "this group needs at least {} members before anyone can post (it has {}). Add members with /add",
@@ -1181,6 +1194,33 @@ impl AccountRuntime {
                         }
                         req.await.ok();
                     }
+                }
+            }
+            OutboxEvent::Command {
+                client_message_id,
+                group_id,
+                result,
+            } => {
+                // An in-chat command (#add, #help, …): the server executed it and stored
+                // nothing, so show its reply as a note in the topic it was typed in.
+                let map = self
+                    .shared
+                    .store
+                    .message_by_client_id(&client_message_id)
+                    .await?;
+                let conv = match &map {
+                    Some(m) => self.shared.store.conversation(m.conversation).await?,
+                    None => {
+                        self.shared
+                            .store
+                            .conversation_by_group(self.account_id, &group_id)
+                            .await?
+                    }
+                };
+                if let (Some(conv), false) = (conv, result.text.is_empty()) {
+                    self.send_note(&conv, &format!("Tzibbur: {}", result.text))
+                        .await
+                        .ok();
                 }
             }
             OutboxEvent::Rescheduled { .. } => {}

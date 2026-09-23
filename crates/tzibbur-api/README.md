@@ -1,19 +1,22 @@
 # tzibbur-api
 
-Rust client for the **Tzibbur** group-messaging service (used by [UnTzibburBot](../../README.md)), reconstructed from the
-reverse-engineered Android app and verified against the live server. The protocol is documented in
+Rust client for the **Tzibbur** group-messaging service (used by [UnTzibburBot](../../README.md)), built against
+Tzibbur's official contract: the [integration guide](https://api.tzibbur.me/integration) and the
+[OpenAPI spec](https://api.tzibbur.me/docs/openapi.json). How this crate uses it, and what it sends when, is in
 [`docs/tzibbur-api.md`](../../docs/tzibbur-api.md).
-It covers every layer the reference describes:
+
+Delivery is push-only: one WebSocket per device, each batch acked on the socket. While the socket is up the crate
+makes no periodic requests; `GET /v1/pending` is only a fallback while it is down.
 
 | Reference section | Module | What's there |
 |---|---|---|
-| REST API | `http` | `TzibburClient` with all 26 endpoints (auth, me, devices, contacts, legal, groups, categories, members, messages, ack, pending) |
-| WebSocket Protocol | `ws` | `TzibburSocket`: protocol v1 frames (`ping`/`ack` out, `hello`/`pong`/`messages`/`group`/`error` in), typed `GroupEvent`s, auto-reconnect with jittered backoff, 4029 handling, 401 → session invalidation, sticky `UpdateRequired` |
+| REST API | `http` | `TzibburClient`: auth, me, devices, capabilities, sessions, contacts, legal, groups, categories, members, messages (incl. in-chat command replies), read, ack, pending |
+| WebSocket Protocol | `ws` | `TzibburSocket`: protocol v1 frames (`ping`/`ack`/`read` out, `hello`/`pong`/`messages`/`group`/`read`/`error` in), typed `GroupEvent`s, auto-reconnect with jittered backoff, 4001/401/403 → session invalidation, 4029 and 429 back-off, sticky `UpdateRequired` |
 | Database Schema | `store` | Exact Room schema v2 (5 tables, indices, FK cascade, 1→2 migration) in SQLite via `rusqlite`; every DAO method from the reference on the `LocalStore` trait |
-| Sync Engine | `sync`, `reconcile`, `outbox`, `backoff` | `SyncEngine` state machine, `restCatchUp` (`GET /v1/pending`), `reconcileGroups`, `BatchReconciler` with echo detection, `OutboxDispatcher` (`BACKOFF_BASE`/`CAP`, `FALLBACK_POLL`, `IN_FLIGHT_STALE`, `Step::{Processed,Idle,WaitUntil}`), `MemberObservationRegistry` |
+| Sync Engine | `sync`, `reconcile`, `outbox`, `backoff` | `SyncEngine` state machine (socket-first delivery, acks on the delivering transport, `GET /v1/pending` only while offline), `reconcileGroups`, `BatchReconciler` with echo detection, `OutboxDispatcher` (idempotent retries on `clientMessageId`, `Retry-After`, command replies), `MemberObservationRegistry` |
 | Auth & Session | `session` | `SessionStore` (file-backed, token AES-GCM encrypted in the Android wire format `[ivLen][iv][ct]`), `SessionState`, `SessionManager` (= `SessionRepository` + `SessionScopeManager` wipe-on-401), `SyncLifecycle`, `AppPrefsStore`, `LegalStore` |
-| Error Handling | `error` | RFC 7807 `ProblemDto` → all 20 `AppError` subtypes selected by the `type` URI suffix, with status fallback, `requestId`, `Retry-After` |
-| Domain Layer | `validation`, `models`, `store` | `TextValidation` use cases (64/100/2000 code points), `can_post`/`can_add_members`, `OutgoingState`, OTP parsing, phone normalisation |
+| Error Handling | `error` | RFC 9457 `ProblemDto` → typed `AppError`s selected by the `type` code (incl. `posting_not_allowed`, `admin_required`, `device_blocked` with `errors.reason`), with status fallback, `requestId`, `Retry-After` |
+| Domain Layer | `validation`, `models`, `store` | `TextValidation` use cases (64/100/1000 code points), `can_post`/`can_add_members`, `OutgoingState`, OTP parsing, phone normalisation |
 
 ## Quick start
 
@@ -24,7 +27,9 @@ use tzibbur_api::prelude::*;
 #[tokio::main]
 async fn main() -> Result<()> {
     // 1. Log in (phone + OTP).
-    let client = TzibburClient::new()?;                       // https://api.tzibbur.me
+    let client = TzibburClient::builder()                     // https://api.tzibbur.me
+        .device(DeviceInfo::new("android", "My Tzibbur client"))
+        .build()?;
     let ch = client.start_auth(&StartAuthRequest {
         phone: "+972501234567".into(), display_name: Some("Bridge".into()), region: Some("IL".into()),
     }).await?;
@@ -95,33 +100,12 @@ SessionManager ────────┘   (wipe on 401 → stop sync, clear D
   is exposed as a `watch` channel; `UpdateRequired` survives `stop()`/`start()`.
 * `SyncEvent` is a `broadcast` channel for consumers (UI or a bridge).
 
-## Verified against the live server
+## Wire notes
 
-The models were checked against `https://api.tzibbur.me` with a real account
-(`examples/probe.rs`, read-only). Where the decompiled reference and the wire
-disagree, the wire wins and the app's spelling is still accepted:
-
-| Item | Live behaviour |
-|---|---|
-| Enums | Lowercase: `role: "admin"/"member"`, `kind: "system"`, settings `"everyone"`. Parsing is case-insensitive; serialization is lowercase. |
-| Group object | `role`, `readSeq`, `unreadCount`, nested `settings: {whoCanPost, whoCanAddMembers}`, `limits: {memberCap: 100, messageMaxLength: 1000, minMembersToPost: 0}`. Flattened onto `GroupDto`; `GroupDto::message_max_length()` prefers the server limit over the app's 2000. |
-| Lists | `{"items": [...], "nextCursor": null}` for groups, members, devices. Messages use `{"items", "nextAfterSeq", "nextBeforeSeq"}` (`MessagesPage`). |
-| `GET /v1/pending` | `{"groups": [{"groupId", "deliveredSeq", "hasMore", "messages": [...]}]}`. When `hasMore` is set the sync engine pages that group over REST. |
-| `GET /v1/legal/{key}` | `{"document": {"key", "text", "checksum"}}`; unwrapped into `LegalDocument`. |
-| `POST /v1/contacts/check` | `{"registered": ["+1555…"]}` (plain E.164 strings). |
-| Problem `type` | Underscore slugs (`urn:tzibbur:error:validation_failed`, `not_found`); normalised to the app's hyphenated names before mapping. `errors` is an array of `{path, message}`. |
-| `POST /v1/auth/start` and `/verify` | Require `platform` (`kosher`\|`android`\|`ios`\|`web`) and `deviceModel` in the body (undocumented in the app dump). The client fills them from `DeviceInfo` (default `android` / `Pixel 7`). |
-| Users / members | Carry `kind: "person" | "service"` (the Tzibbur System sender is a `service`). |
-| Devices | `deviceModel`, `registeredAt`, `lastSeenAt`, `userId`, `imei`, `serialNumber`. |
-| WS `hello` | `{"protocolVersion": 1, "userId", "deviceId", "limits": {"heartbeatSeconds": 30, "maxConnectionsPerDevice": 3, "maxFrameBytes": 16384}}`, surfaced as `SocketEvent::Hello`. The server also sends WebSocket-level pings. |
-| WS `messages` | Carries `hasMore` alongside `groupId` and `messages`. |
-| WS/REST `ack` | A **delivery** acknowledgement: advances the device's `deliveredSeq` (drops the group from `GET /v1/pending`) and leaves `readSeq`/`unreadCount` untouched. A device that has not acked is re-sent everything on each connect and does not appear to receive live pushes. The sync engine acks every stored batch. |
-| Timestamps | RFC 3339 strings; epoch milliseconds are accepted too. |
-
-Still unconfirmed (no write traffic was sent): the exact slug for an
-admin-only permission (`Permission::ADMINS` = `"admins"` is a guess), and
-whether `POST /v1/groups` expects the flat `whoCanPost` fields or a nested
-`settings` object.
+The official guide is the reference. The models also accept a few older shapes seen
+before it existed (bare message replies, nested `payload` on group frames, flat
+`whoCanPost` fields, uppercase enums, epoch-millisecond timestamps), so an older server
+or a mock still parses.
 
 ## Testing
 
@@ -129,8 +113,11 @@ whether `POST /v1/groups` expects the flat `whoCanPost` fields or a nested
 cargo test
 ```
 
-* 22 unit tests (error mapping, live DTO shapes, reconciler, backoff, validation,
-  AES-GCM framing, SQLite schema/migration/DAO semantics, session file store).
-* 3 end-to-end tests in `tests/e2e_mock_server.rs` run an in-process mock of
-  the API (axum, REST + WebSocket) and drive the real client, socket, sync
-  engine, outbox and session wipe.
+* Unit tests: error mapping, official DTO and frame shapes, send/command replies,
+  reconciler, backoff, validation, AES-GCM framing, SQLite schema/migration/DAO
+  semantics, session file store.
+* End-to-end tests in `tests/e2e_mock_server.rs` run an in-process mock of the
+  official API (axum, REST + WebSocket): the socket pushes the backlog after `hello`
+  and releases each next batch only after a socket ack. They drive the real client,
+  socket, sync engine, outbox and session wipe, and assert that a connected session
+  makes no `GET /v1/pending`, history or REST-ack requests.
