@@ -3,8 +3,7 @@
 //! The server returns `application/problem+json` (RFC 9457); the suffix of `type`
 //! after the last `:` selects the error subtype (`urn:tzibbur:error:invalid_display_name`
 //! → [`AppError::InvalidDisplayName`]). Anything unmapped falls back to the HTTP
-//! status class. Codes follow the official error catalogue at
-//! <https://api.tzibbur.me/integration> (§11).
+//! status class. Codes follow the official error catalogue.
 
 use crate::constants::{DEFAULT_MAX_DISPLAY_NAME, DEFAULT_MAX_GROUP_NAME, DEFAULT_MAX_MEMBERS};
 use serde::{Deserialize, Serialize};

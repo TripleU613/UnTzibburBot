@@ -98,7 +98,7 @@ impl Config {
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
             admin_telegram_id: env("BRIDGE_ADMIN_TELEGRAM_ID").and_then(|v| v.parse().ok()),
-            // Reported at enrollment as `platform` / `deviceModel`. The official guide asks
+            // Reported at enrollment as `platform` / `deviceModel`. The official API asks
             // for an accurate, stable model string; `web` would mean 15-minute tokens and a
             // captcha, so the bridge enrolls as a native (android) device.
             device: tzibbur_api::DeviceInfo {

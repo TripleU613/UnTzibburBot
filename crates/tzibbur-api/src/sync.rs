@@ -1,8 +1,7 @@
 //! `SyncEngine`: ties the WebSocket, REST catch-up, group reconciliation and the
 //! outbox together on top of a [`LocalStore`].
 //!
-//! Delivery follows the official store-and-forward contract
-//! (<https://api.tzibbur.me/integration>, §9–§10):
+//! Delivery follows the official store-and-forward contract:
 //!
 //! * The WebSocket is the only live transport. After `hello` the server pushes every
 //!   undelivered batch by itself; each `messages` frame is stored and then acked **on

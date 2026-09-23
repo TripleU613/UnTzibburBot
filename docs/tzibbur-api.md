@@ -2,14 +2,13 @@
 
 Tzibbur publishes an official contract for client developers. It is authoritative:
 
-- Integration guide: <https://api.tzibbur.me/integration>
 - Live reference: <https://api.tzibbur.me/docs>
 - OpenAPI spec: <https://api.tzibbur.me/docs/openapi.json>
 
 This page does not repeat that contract. It records how `crates/tzibbur-api` and the
 Telegram bridge follow it, above all how they keep request volume low. The notes from
 the decompiled Android app ([android-app-notes.md](android-app-notes.md)) are
-historical; where they disagree with the official guide, the guide wins.
+historical; where they disagree with the official API, the official API wins.
 
 - REST: `https://api.tzibbur.me/v1` · WebSocket: `wss://api.tzibbur.me/v1/ws` (protocol 1)
 - Auth: `Authorization: Bearer <token>` on every call except `/v1/auth/start` and `/v1/auth/verify`
