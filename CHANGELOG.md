@@ -15,6 +15,15 @@ All notable changes to this project are documented here. The format follows
 - Dependency audit workflow (RustSec) and dependency review on pull requests.
 
 ### Changed
+- Moved to Tzibbur's official API contract (<https://api.tzibbur.me/integration>) and stopped the polling that loaded the server:
+  - Delivery is push-only over the WebSocket. The 60-second sweep that paged every group's history and sent a REST ack per group, per account, is gone, as is the REST catch-up on every reconnect. A connected account now makes no periodic requests; `GET /v1/pending` is used only while the socket is down (at most every 5 minutes).
+  - Socket batches are acked on the socket with their last seq, as the protocol requires; REST acks are only used for REST-pulled batches. Reading uses the new `read` frame / `POST /v1/groups/{id}/read` instead of an ack.
+  - Group events are parsed in the official shape (fields at the top level, `settings` nested), so renames, joins, leaves and role changes reach Telegram again.
+  - Sends understand `{message, duplicate}` and in-chat command replies (`{command}`); a `#help` or `#add` typed in a topic now shows Tzibbur's reply instead of retrying forever.
+  - The socket stops on close code 4001 or a 403 `device_blocked`, waits at least a minute after 4029 (too many connections), and honours `Retry-After` on a 429 handshake.
+  - Official error codes (`posting_not_allowed`, `admin_required`, `device_blocked`, …) and status codes; defaults now match the server (1000-character messages, 100 members).
+  - The client identifies itself honestly (`tzibbur-api-rs/…` User-Agent, device model `UnTzibburBot (Telegram bridge)`) instead of imitating the Android app.
+  - New client calls: `GET /v1/capabilities`, `POST /v1/sessions/logout`, `DELETE /v1/me/devices/{id}`.
 - CI runs a single cached job and skips the toolchain on documentation-only changes; deploys skip documentation-only pushes.
 
 ## [v0.1.0] - 2026-09-08

@@ -1,9 +1,10 @@
 //! `AppError` hierarchy and RFC 7807 Problem+JSON mapping.
 //!
-//! The server returns `application/problem+json`; the suffix of `type` after the
-//! last `:` selects the error subtype (`urn:tzibbur:error:invalid-display-name`
+//! The server returns `application/problem+json` (RFC 9457); the suffix of `type`
+//! after the last `:` selects the error subtype (`urn:tzibbur:error:invalid_display_name`
 //! → [`AppError::InvalidDisplayName`]). Anything unmapped falls back to the HTTP
-//! status class.
+//! status class. Codes follow the official error catalogue at
+//! <https://api.tzibbur.me/integration> (§11).
 
 use crate::constants::{DEFAULT_MAX_DISPLAY_NAME, DEFAULT_MAX_GROUP_NAME, DEFAULT_MAX_MEMBERS};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,15 @@ impl ProblemDto {
         }
         // Live server emits `validation_failed`, the app matched `validation-failed`.
         Some(slug.to_ascii_lowercase().replace('_', "-"))
+    }
+
+    /// `errors.reason` of a policy refusal (`admins_only`, `system_thread`, …).
+    pub fn reason(&self) -> Option<String> {
+        self.errors
+            .as_ref()?
+            .get("reason")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     }
 
     fn extra_usize(&self, key: &str) -> Option<usize> {
@@ -100,6 +110,38 @@ pub enum AppError {
     // ---- 403 / 404 ----
     #[error("forbidden{}", fmt_rid(request_id))]
     Forbidden { request_id: Option<String> },
+    /// `403 posting_not_allowed` (`reason`: `admins_only`, `system_thread`, …).
+    #[error("posting not allowed{}{}", fmt_reason(reason), fmt_rid(request_id))]
+    PostingNotAllowed {
+        reason: Option<String>,
+        request_id: Option<String>,
+    },
+    /// `403 adding_members_not_allowed`.
+    #[error(
+        "adding members not allowed{}{}",
+        fmt_reason(reason),
+        fmt_rid(request_id)
+    )]
+    AddingMembersNotAllowed {
+        reason: Option<String>,
+        request_id: Option<String>,
+    },
+    /// `403 admin_required` (`reason`: `not_admin` or `system_thread`).
+    #[error("admin required{}{}", fmt_reason(reason), fmt_rid(request_id))]
+    AdminRequired {
+        reason: Option<String>,
+        request_id: Option<String>,
+    },
+    /// `403 leave_not_allowed`.
+    #[error("leaving not allowed{}{}", fmt_reason(reason), fmt_rid(request_id))]
+    LeaveNotAllowed {
+        reason: Option<String>,
+        request_id: Option<String>,
+    },
+    /// `403 device_blocked`: an operator blocked this device. Terminal: never retry,
+    /// never re-enroll.
+    #[error("device blocked by the operator{}", fmt_rid(request_id))]
+    DeviceBlocked { request_id: Option<String> },
     #[error("not found{}", fmt_rid(request_id))]
     NotFound { request_id: Option<String> },
     // ---- 422 ----
@@ -110,6 +152,11 @@ pub enum AppError {
     },
     #[error("cannot demote or remove the last admin{}", fmt_rid(request_id))]
     LastAdmin { request_id: Option<String> },
+    #[error("admin limit reached{}{}", max_admins.map(|m| format!(" (max {m})")).unwrap_or_default(), fmt_rid(request_id))]
+    AdminLimitReached {
+        max_admins: Option<u32>,
+        request_id: Option<String>,
+    },
     #[error("SMS delivery failed{}", fmt_rid(request_id))]
     SmsDeliveryFailed { request_id: Option<String> },
     #[error("group too small to post{}{}", min_members.map(|m| format!(" (needs {m} members)")).unwrap_or_default(), fmt_rid(request_id))]
@@ -160,6 +207,13 @@ pub enum AppError {
     InvalidInput(String),
 }
 
+fn fmt_reason(reason: &Option<String>) -> String {
+    reason
+        .as_ref()
+        .map(|r| format!(" ({r})"))
+        .unwrap_or_default()
+}
+
 fn fmt_rid(rid: &Option<String>) -> String {
     rid.as_ref()
         .map(|r| format!(" [requestId={r}]"))
@@ -182,6 +236,12 @@ impl AppError {
             | Unauthorized { request_id }
             | InvalidCode { request_id }
             | Forbidden { request_id }
+            | PostingNotAllowed { request_id, .. }
+            | AddingMembersNotAllowed { request_id, .. }
+            | AdminRequired { request_id, .. }
+            | LeaveNotAllowed { request_id, .. }
+            | DeviceBlocked { request_id }
+            | AdminLimitReached { request_id, .. }
             | NotFound { request_id }
             | GroupFull { request_id, .. }
             | LastAdmin { request_id }
@@ -207,10 +267,19 @@ impl AppError {
             | InvalidMessage { .. }
             | ContactsBatchTooLarge { .. } => 400,
             Unauthorized { .. } | InvalidCode { .. } => 401,
-            Forbidden { .. } => 403,
+            Forbidden { .. }
+            | PostingNotAllowed { .. }
+            | AddingMembersNotAllowed { .. }
+            | AdminRequired { .. }
+            | LeaveNotAllowed { .. }
+            | DeviceBlocked { .. } => 403,
             NotFound { .. } => 404,
-            ClientMessageIdReused { .. } | GroupTooSmall { .. } => 409,
-            GroupFull { .. } | LastAdmin { .. } | SmsDeliveryFailed { .. } => 422,
+            ClientMessageIdReused { .. }
+            | GroupTooSmall { .. }
+            | GroupFull { .. }
+            | LastAdmin { .. }
+            | AdminLimitReached { .. } => 409,
+            SmsDeliveryFailed { .. } => 502,
             RateLimited { .. } => 429,
             NotImplemented { .. } => 501,
             Internal { .. } => 500,
@@ -235,6 +304,12 @@ impl AppError {
             Unauthorized { .. } => "unauthorized",
             InvalidCode { .. } => "invalid-code",
             Forbidden { .. } => "forbidden",
+            PostingNotAllowed { .. } => "posting-not-allowed",
+            AddingMembersNotAllowed { .. } => "adding-members-not-allowed",
+            AdminRequired { .. } => "admin-required",
+            LeaveNotAllowed { .. } => "leave-not-allowed",
+            DeviceBlocked { .. } => "device-blocked",
+            AdminLimitReached { .. } => "admin-limit-reached",
             NotFound { .. } => "not-found",
             GroupFull { .. } => "group-full",
             LastAdmin { .. } => "last-admin",
@@ -254,9 +329,24 @@ impl AppError {
         }
     }
 
-    /// `true` for 401 `Unauthorized` — the mobile client wipes the session on this.
+    /// `true` when the session is unusable: a 401 `unauthorized` (re-enroll) or a
+    /// 403 `device_blocked` (terminal). Either way the client must stop calling the API.
     pub fn invalidates_session(&self) -> bool {
-        matches!(self, AppError::Unauthorized { .. })
+        matches!(
+            self,
+            AppError::Unauthorized { .. } | AppError::DeviceBlocked { .. }
+        )
+    }
+
+    /// Policy reason of a 403 refusal (`errors.reason`), when the server gave one.
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            AppError::PostingNotAllowed { reason, .. }
+            | AppError::AddingMembersNotAllowed { reason, .. }
+            | AppError::AdminRequired { reason, .. }
+            | AppError::LeaveNotAllowed { reason, .. } => reason.as_deref(),
+            _ => None,
+        }
     }
 
     /// `true` when the failure is transient and the request may be retried.
@@ -326,6 +416,27 @@ impl AppError {
             "unauthorized" => AppError::Unauthorized { request_id: rid },
             "invalid-code" => AppError::InvalidCode { request_id: rid },
             "forbidden" => AppError::Forbidden { request_id: rid },
+            "posting-not-allowed" => AppError::PostingNotAllowed {
+                reason: problem.reason(),
+                request_id: rid,
+            },
+            "adding-members-not-allowed" => AppError::AddingMembersNotAllowed {
+                reason: problem.reason(),
+                request_id: rid,
+            },
+            "admin-required" => AppError::AdminRequired {
+                reason: problem.reason(),
+                request_id: rid,
+            },
+            "leave-not-allowed" => AppError::LeaveNotAllowed {
+                reason: problem.reason(),
+                request_id: rid,
+            },
+            "device-blocked" => AppError::DeviceBlocked { request_id: rid },
+            "admin-limit-reached" => AppError::AdminLimitReached {
+                max_admins: problem.extra_usize("maxAdmins").map(|v| v as u32),
+                request_id: rid,
+            },
             "not-found" => AppError::NotFound { request_id: rid },
             "group-full" => AppError::GroupFull {
                 max_members: problem
@@ -343,10 +454,8 @@ impl AppError {
                 request_id: rid,
             },
             "rate-limited" => AppError::RateLimited {
-                retry_after_seconds: problem
-                    .extra_usize("retryAfterSeconds")
-                    .map(|v| v as u64)
-                    .or(retry_after_header),
+                retry_after_seconds: retry_after_header
+                    .or_else(|| problem.extra_usize("retryAfterSeconds").map(|v| v as u64)),
                 request_id: rid,
             },
             "not-implemented" => AppError::NotImplemented { request_id: rid },
@@ -468,6 +577,26 @@ mod tests {
             AppError::from_problem(404, &p, None),
             AppError::NotFound { .. }
         ));
+    }
+
+    #[test]
+    fn policy_refusals_carry_reason() {
+        let p: ProblemDto = serde_json::from_str(
+            r#"{"type":"urn:tzibbur:error:posting_not_allowed","title":"posting_not_allowed","status":403,
+                "errors":{"reason":"admins_only","whoCanPost":"admins","role":"member"}}"#,
+        )
+        .unwrap();
+        let e = AppError::from_problem(403, &p, None);
+        assert!(matches!(e, AppError::PostingNotAllowed { .. }), "{e:?}");
+        assert_eq!(e.reason(), Some("admins_only"));
+        assert_eq!(e.code(), "posting-not-allowed");
+        let p: ProblemDto = serde_json::from_str(
+            r#"{"type":"urn:tzibbur:error:device_blocked","status":403,"errors":{"reason":"blocked"}}"#,
+        )
+        .unwrap();
+        let e = AppError::from_problem(403, &p, None);
+        assert!(e.invalidates_session());
+        assert!(!e.is_retryable());
     }
 
     #[test]

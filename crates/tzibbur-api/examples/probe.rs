@@ -122,7 +122,7 @@ async fn main() -> Result<()> {
         tokio::select! {
             _ = tokio::time::sleep_until(deadline) => break,
             e = ev.recv() => match e {
-                Ok(SocketEvent::Messages { group_id, messages }) => println!("ws messages for {group_id}: {}", messages.len()),
+                Ok(SocketEvent::Messages { group_id, messages, .. }) => println!("ws messages for {group_id}: {}", messages.len()),
                 Ok(e) => println!("ws event: {e:?}"),
                 Err(_) => break,
             }

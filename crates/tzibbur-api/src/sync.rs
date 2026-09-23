@@ -1,6 +1,18 @@
 //! `SyncEngine`: ties the WebSocket, REST catch-up, group reconciliation and the
 //! outbox together on top of a [`LocalStore`].
 //!
+//! Delivery follows the official store-and-forward contract
+//! (<https://api.tzibbur.me/integration>, §9–§10):
+//!
+//! * The WebSocket is the only live transport. After `hello` the server pushes every
+//!   undelivered batch by itself; each `messages` frame is stored and then acked **on
+//!   the socket** with its last seq, which releases the next batch for that group.
+//! * On every (re)connect the group list is re-fetched once (`GET /v1/groups`), because
+//!   group events are not replayed. Nothing else is fetched: no per-group paging and
+//!   no periodic sweeps.
+//! * Only while the socket is down does the engine fall back to `GET /v1/pending` +
+//!   REST acks, at most once per [`SyncEngine::fallback_poll_interval`].
+//!
 //! ```text
 //! Idle ──start()──▶ Connecting ──hello──▶ Connected
 //!                                             │
@@ -95,6 +107,11 @@ pub enum SyncEvent {
         role: Role,
         display_name: Option<String>,
     },
+    /// The account was added to a group (a `member-added` about ourselves); the
+    /// group row has been fetched.
+    GroupJoined {
+        group_id: String,
+    },
     /// A full catch-up / group reconciliation completed.
     CaughtUp,
     UpdateRequired,
@@ -121,9 +138,23 @@ pub struct SyncEngine {
     events: broadcast::Sender<SyncEvent>,
     task: Mutex<Option<(JoinHandle<()>, watch::Sender<bool>)>>,
     pending_limit: Option<u32>,
-    /// How often to page every group over REST as a safety net (default 60s).
-    catch_up_interval: std::time::Duration,
+    /// While the socket is down, how often to fall back to `GET /v1/pending`.
+    fallback_poll_interval: std::time::Duration,
 }
+
+/// Where a batch came from, which decides how it is acknowledged: a batch delivered
+/// on the socket must be acked on the socket, a REST-pulled one over REST.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckVia {
+    Socket,
+    Rest,
+    /// History paging: nothing to acknowledge.
+    None,
+}
+
+/// Default for [`SyncEngine::fallback_poll_interval`].
+pub const DEFAULT_FALLBACK_POLL_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
 
 impl SyncEngine {
     pub fn new(client: TzibburClient, store: Arc<dyn LocalStore>) -> Result<Arc<Self>> {
@@ -157,8 +188,13 @@ impl SyncEngine {
             events,
             task: Mutex::new(None),
             pending_limit: None,
-            catch_up_interval: std::time::Duration::from_secs(60),
+            fallback_poll_interval: DEFAULT_FALLBACK_POLL_INTERVAL,
         })
+    }
+
+    /// While the socket is down, how often the engine polls `GET /v1/pending`.
+    pub fn fallback_poll_interval(&self) -> std::time::Duration {
+        self.fallback_poll_interval
     }
 
     /// The signed-in user's id, used for unread accounting and echo labelling.
@@ -255,13 +291,15 @@ impl SyncEngine {
         self.task.lock().is_some()
     }
 
-    /// Pull-to-refresh: REST catch-up when not live, then poke outbox and reconcile groups.
+    /// Pull-to-refresh: re-fetch the group list and, only when the socket is down,
+    /// catch up over REST. While connected the socket already delivers everything.
     pub async fn refresh_now(&self) -> Result<()> {
         self.reconcile_groups().await?;
         if self.sync_state() != SyncState::Connected {
             self.rest_catch_up().await?;
+        } else {
+            self.emit(SyncEvent::CaughtUp);
         }
-        self.catch_up_all_groups().await;
         self.outbox.poke();
         Ok(())
     }
@@ -270,18 +308,19 @@ impl SyncEngine {
         let mut events = self.socket.subscribe();
         let mut state_rx = self.socket.watch_state();
         let mut outbox_events = self.outbox.subscribe();
-        let mut safety_net = tokio::time::interval(self.catch_up_interval);
-        safety_net.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        safety_net.tick().await; // first tick fires immediately; skip it
+        let mut fallback = tokio::time::interval(self.fallback_poll_interval);
+        fallback.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        fallback.tick().await; // first tick fires immediately; skip it
         loop {
             tokio::select! {
                 _ = stop_rx.changed() => break,
-                _ = safety_net.tick() => {
-                    if self.sync_state() == SyncState::Connected {
-                        self.catch_up_all_groups().await;
-                        self.ack_all_delivered().await;
-                    } else if let Err(e) = self.refresh_now().await {
-                        tracing::debug!(error = %e, "sync: periodic refresh failed");
+                _ = fallback.tick() => {
+                    // Only while the socket is down: the socket delivers everything otherwise.
+                    let s = self.sync_state();
+                    if s != SyncState::Connected && s != SyncState::UpdateRequired {
+                        if let Err(e) = self.rest_catch_up().await {
+                            tracing::debug!(error = %e, "sync: fallback poll failed");
+                        }
                     }
                 }
                 ob = outbox_events.recv() => {
@@ -305,10 +344,10 @@ impl SyncEngine {
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(missed = n, "sync: lagged behind socket events, forcing catch-up");
-                        if let Err(e) = self.rest_catch_up().await {
-                            tracing::warn!(error = %e, "sync: catch-up after lag failed");
-                        }
+                        // Dropped frames were never acked; a fresh connection makes the
+                        // server redeliver them (never a REST ack for socket batches).
+                        tracing::warn!(missed = n, "sync: lagged behind socket events, reconnecting");
+                        self.socket.reconnect().await;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -320,18 +359,12 @@ impl SyncEngine {
         match ev {
             SocketEvent::Connected => {
                 self.set_state(SyncState::Connected);
-                // Groups first so deleted/left groups are flagged before consumers see `CaughtUp`.
+                // Group events are never replayed, so re-fetch the list once per connect.
+                // The backlog itself arrives on the socket without asking.
                 if let Err(e) = self.reconcile_groups().await {
                     tracing::warn!(error = %e, "sync: group reconcile on connect failed");
                 }
-                if let Err(e) = self.rest_catch_up().await {
-                    tracing::warn!(error = %e, "sync: catch-up on connect failed");
-                }
-                // Safety net: pending/WS may not carry everything; page each group from its
-                // newest cached seq so nothing is missed regardless of delivery semantics.
-                self.catch_up_all_groups().await;
-                // Tell the server this device is caught up on everything it holds.
-                self.ack_all_delivered().await;
+                self.emit(SyncEvent::CaughtUp);
                 self.outbox.poke();
             }
             SocketEvent::Disconnected { reason } => {
@@ -340,14 +373,20 @@ impl SyncEngine {
                 }
             }
             SocketEvent::Hello { .. } => {}
-            SocketEvent::Messages { group_id, messages } => {
+            SocketEvent::Messages {
+                group_id, messages, ..
+            } => {
                 let batch = messages
                     .into_iter()
                     .map(|m| MessageEntity::from_dto(m, &group_id))
                     .collect();
-                self.apply_incoming(&group_id, batch).await?;
+                self.apply_incoming(&group_id, batch, AckVia::Socket)
+                    .await?;
             }
             SocketEvent::GroupEvent(ge) => self.apply_group_event(ge).await?,
+            SocketEvent::Read { group_id, read_seq } => {
+                self.store.mark_read(&group_id, read_seq)?;
+            }
         }
         Ok(())
     }
@@ -356,17 +395,25 @@ impl SyncEngine {
     // Applying data
     // -----------------------------------------------------------------------
 
-    /// Ensure the group row exists locally (fetching it if needed) and store a batch.
+    /// Ensure the group row exists locally (fetching it if needed), store a batch,
+    /// then acknowledge it as `ack` says (the last seq of the batch, after storing).
     pub async fn apply_incoming(
         &self,
         group_id: &str,
         batch: Vec<MessageEntity>,
+        ack: AckVia,
     ) -> Result<StoreBatchOutcome> {
+        let last_seq = batch.iter().map(|m| m.seq).max();
         if self.store.get_group(group_id)?.is_none() {
             match self.client.get_group(group_id).await {
                 Ok(g) => self.store.upsert_group(&GroupEntity::from(g))?,
                 Err(AppError::NotFound { .. }) => {
                     self.store.mark_group_deleted(group_id)?;
+                    // Not a member: the server ignores the ack, but a socket batch must
+                    // still be answered or nothing more arrives for the group.
+                    if let Some(seq) = last_seq {
+                        self.ack_delivered(group_id, seq, ack).await;
+                    }
                     return Ok(StoreBatchOutcome::default());
                 }
                 Err(e) => {
@@ -384,12 +431,11 @@ impl SyncEngine {
             echoes = outcome.plan.echo_confirmations.len(),
             "sync: batch applied"
         );
-        // Delivery acknowledgement. The server's `ack` advances the device's `deliveredSeq`
-        // (verified live: `readSeq` is untouched) and it withholds further pushes until
-        // the device has acknowledged what it was sent. The batch is already persisted, so
-        // acking here cannot lose anything.
-        if let Some(seq) = outcome.plan.max_seq {
-            self.ack_delivered(group_id, seq).await;
+        // Delivery acknowledgement, only now that the batch is durably stored. The server
+        // keeps one un-acked socket batch in flight per group and sends nothing more for
+        // it until this arrives, so a duplicate-only batch is acked too.
+        if let Some(seq) = last_seq {
+            self.ack_delivered(group_id, seq, ack).await;
         }
         for echo in &outcome.plan.echo_confirmations {
             self.emit(SyncEvent::EchoConfirmed {
@@ -424,26 +470,57 @@ impl SyncEngine {
     /// Apply a `group` frame / pending event to the store.
     pub async fn apply_group_event(&self, ge: GroupEvent) -> Result<()> {
         match ge {
-            GroupEvent::MemberAdded { group_id, member } => {
+            GroupEvent::MemberAdded {
+                group_id,
+                user_id,
+                role,
+                member,
+            } => {
+                if self.self_user_id().as_deref() == Some(user_id.as_str()) {
+                    // We were added to a group: its messages start flowing on this socket.
+                    if self.refresh_group(&group_id).await?.is_some() {
+                        let _ = self.refresh_members(&group_id).await;
+                        self.emit(SyncEvent::GroupJoined { group_id });
+                    }
+                    return Ok(());
+                }
                 let refresh = match self.member_refresh {
                     MemberRefreshPolicy::All => true,
                     MemberRefreshPolicy::ObservedOnly => self.observed.is_observed(&group_id),
                 };
-                let entity = MemberEntity::from_dto(member, &group_id);
-                self.store.upsert_member(&entity)?;
+                if let Some(m) = member {
+                    self.store
+                        .upsert_member(&MemberEntity::from_dto(m, &group_id))?;
+                }
                 self.store.set_group_member_count(&group_id, 1)?;
-                self.emit(SyncEvent::MemberAdded {
-                    group_id: group_id.clone(),
-                    member: entity,
-                });
+                // The official frame names only the user; the member list has the name.
                 if refresh {
                     if let Err(e) = self.refresh_members(&group_id).await {
                         tracing::warn!(error = %e, group_id, "sync: member refresh failed");
                     }
                 }
+                let entity = self
+                    .store
+                    .members(&group_id)
+                    .ok()
+                    .and_then(|ms| ms.into_iter().find(|m| m.user_id == user_id));
+                let member = entity.unwrap_or_else(|| MemberEntity {
+                    group_id: group_id.clone(),
+                    user_id: user_id.clone(),
+                    display_name: String::new(),
+                    phone_e164: None,
+                    role: role.unwrap_or_default(),
+                    joined_at: crate::models::now_epoch_ms(),
+                });
+                self.emit(SyncEvent::MemberAdded {
+                    group_id: group_id.clone(),
+                    member,
+                });
                 self.emit(SyncEvent::MembersChanged { group_id });
             }
-            GroupEvent::MemberRemoved { group_id, user_id } => {
+            GroupEvent::MemberRemoved {
+                group_id, user_id, ..
+            } => {
                 let display_name = self.store.members(&group_id).ok().and_then(|ms| {
                     ms.into_iter()
                         .find(|m| m.user_id == user_id)
@@ -520,16 +597,17 @@ impl SyncEngine {
     // REST-driven sync
     // -----------------------------------------------------------------------
 
-    /// `GET /v1/pending` and apply everything it contains. Follows cursors.
+    /// `GET /v1/pending` and apply everything it contains, acking each group over
+    /// REST; pulls again while any group reports `hasMore`. For use while no socket
+    /// is open (never REST-ack what an open socket delivered).
     pub async fn rest_catch_up(&self) -> Result<PendingResponse> {
         let mut total = PendingResponse::default();
-        loop {
+        // Bounded: each round drains up to `limit` messages per group.
+        for _ in 0..50 {
             let page = self.client.pending(self.pending_limit).await?;
             tracing::debug!(
                 buckets = page.messages.len(),
                 messages = page.message_count(),
-                groups = page.groups.len(),
-                events = page.events.len(),
                 "sync: pending page"
             );
             for g in &page.groups {
@@ -542,13 +620,18 @@ impl SyncEngine {
                     .cloned()
                     .map(|m| MessageEntity::from_dto(m, &bucket.group_id))
                     .collect();
-                self.apply_incoming(&bucket.group_id, batch).await?;
+                self.apply_incoming(&bucket.group_id, batch, AckVia::Rest)
+                    .await?;
             }
             for ev in &page.events {
                 self.apply_group_event(GroupEvent::parse(&ev.event, ev.payload.clone()))
                     .await?;
             }
-            let more = page.has_more && page.next_cursor.is_some();
+            let more = page
+                .messages
+                .iter()
+                .any(|b| b.has_more && !b.messages.is_empty())
+                || (page.has_more && page.next_cursor.is_some());
             total.messages.extend(page.messages);
             total.groups.extend(page.groups);
             total.events.extend(page.events);
@@ -560,75 +643,26 @@ impl SyncEngine {
         Ok(total)
     }
 
-    /// Tell the server this device holds everything up to `seq` for the group
-    /// (WS frame when live, REST otherwise). Errors are logged, never fatal.
-    pub async fn ack_delivered(&self, group_id: &str, seq: i64) {
+    /// Acknowledge delivery up to `seq` on the transport that delivered the batch.
+    /// Errors are logged, never fatal: an un-acked batch is simply redelivered.
+    pub async fn ack_delivered(&self, group_id: &str, seq: i64, via: AckVia) {
         if seq <= 0 {
             return;
         }
-        let r = if self.sync_state() == SyncState::Connected {
-            self.socket.ack(group_id, seq).await
-        } else {
-            self.client.ack(group_id, seq).await
+        let r = match via {
+            AckVia::Socket => self.socket.ack(group_id, seq).await,
+            AckVia::Rest => self.client.ack(group_id, seq).await,
+            AckVia::None => return,
         };
         match r {
-            Ok(()) => tracing::debug!(
-                group_id,
-                seq,
-                live = self.sync_state() == SyncState::Connected,
-                "sync: delivery ack sent"
-            ),
+            Ok(()) => tracing::debug!(group_id, seq, ?via, "sync: delivery ack sent"),
             Err(e) => tracing::warn!(error = %e, group_id, seq, "sync: delivery ack failed"),
         }
     }
 
-    /// Ack the newest cached seq of every group via REST. REST acks advance the
-    /// server's `deliveredSeq` to any value (verified live), so this reliably drains
-    /// `GET /v1/pending` even if a live WS ack was dropped (e.g. connection contention).
-    pub async fn ack_all_delivered(&self) {
-        let groups = match self.store.groups() {
-            Ok(g) => g,
-            Err(_) => return,
-        };
-        for g in groups {
-            match self.store.max_seq(&g.id) {
-                Ok(Some(seq)) if seq > 0 => {
-                    if let Err(e) = self.client.ack(&g.id, seq).await {
-                        tracing::debug!(error = %e, group = %g.id, seq, "sync: REST delivery ack failed");
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Run [`Self::catch_up_group`] for every non-deleted group; errors are logged.
-    pub async fn catch_up_all_groups(&self) -> usize {
-        let groups = match self.store.groups() {
-            Ok(g) => g,
-            Err(e) => {
-                tracing::warn!(error = %e, "sync: cannot list groups for catch-up");
-                return 0;
-            }
-        };
-        let mut total = 0;
-        for g in groups {
-            match self.catch_up_group(&g.id).await {
-                Ok(n) => total += n,
-                Err(e) => tracing::warn!(error = %e, group = %g.id, "sync: group catch-up failed"),
-            }
-        }
-        if total > 0 {
-            tracing::info!(
-                stored = total,
-                "sync: catch-up found messages the socket did not deliver"
-            );
-        }
-        total
-    }
-
-    /// Page `GET /v1/groups/{id}/messages?afterSeq=` from the newest stored seq
-    /// until the server reports no `nextAfterSeq`. Returns messages stored.
+    /// History paging: `GET /v1/groups/{id}/messages?afterSeq=` from the newest stored
+    /// seq until the server reports no `nextAfterSeq`. Returns messages stored. This is
+    /// for scrollback (e.g. after `#unmute`); it is never run automatically.
     pub async fn catch_up_group(&self, group_id: &str) -> Result<usize> {
         let mut after = self.store.max_seq(group_id)?;
         let mut stored = 0;
@@ -655,7 +689,10 @@ impl SyncEngine {
                 .into_iter()
                 .map(|m| MessageEntity::from_dto(m, group_id))
                 .collect();
-            stored += self.apply_incoming(group_id, batch).await?.inserted;
+            stored += self
+                .apply_incoming(group_id, batch, AckVia::None)
+                .await?
+                .inserted;
             match page.next_after_seq {
                 Some(next) => after = Some(next),
                 None => break,
@@ -744,7 +781,7 @@ impl SyncEngine {
             .into_iter()
             .map(|m| MessageEntity::from_dto(m, group_id))
             .collect();
-        self.apply_incoming(group_id, batch).await
+        self.apply_incoming(group_id, batch, AckVia::None).await
     }
 
     /// `MessageRepository.loadOlderMessages`: page backwards from the oldest stored seq.
@@ -772,19 +809,19 @@ impl SyncEngine {
         self.outbox.enqueue(group_id, body)
     }
 
-    /// Mark read locally and ack on the server. Note: the server's `ack` is a *delivery*
-    /// acknowledgement (it advances `deliveredSeq`, not `readSeq`), and the engine already
-    /// acks every stored batch, so this mainly maintains the local `lastReadSeq` bookmark.
+    /// Move the user's read position (per user; clears the badge on their other
+    /// devices): a `read` frame when connected, `POST /v1/groups/{id}/read` otherwise.
+    /// This is not a delivery ack; the engine acks stored batches by itself.
     pub async fn mark_read(&self, group_id: &str, seq: i64) -> Result<()> {
         self.store.mark_read(group_id, seq)?;
         if self.sync_state() == SyncState::Connected {
-            self.socket.ack(group_id, seq).await
+            self.socket.read(group_id, seq).await
         } else {
-            self.client.ack(group_id, seq).await
+            self.client.mark_read(group_id, seq).await
         }
     }
 
-    /// Mute is a local-only flag in the mobile client.
+    /// Local mute flag. (Server-side mute is the in-chat `#mute` command.)
     pub fn mute_group(&self, group_id: &str, muted: bool) -> Result<()> {
         self.store.set_muted(group_id, muted)
     }

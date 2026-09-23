@@ -1,4 +1,9 @@
-//! Constants recovered from the Tzibbur Android client.
+//! Protocol constants and default limits.
+//!
+//! The limits are today's server defaults from the official integration guide
+//! (<https://api.tzibbur.me/integration>). The server can change them at any time,
+//! so prefer what it reports (`Group.limits`, `GET /v1/capabilities`, `hello.limits`)
+//! and use these only as local fallbacks.
 
 use std::time::Duration;
 
@@ -8,11 +13,15 @@ pub const DEFAULT_BASE_URL: &str = "https://api.tzibbur.me";
 pub const DEFAULT_WS_URL: &str = "wss://api.tzibbur.me/v1/ws";
 /// WebSocket protocol version the client speaks.
 pub const WS_PROTOCOL_VERSION: u32 = 1;
-/// Socket close code sent by the server when the account has too many open connections.
+/// Socket close code sent by the server when the device has too many open connections.
 pub const WS_CLOSE_TOO_MANY_CONNECTIONS: u16 = 4029;
+/// Socket close code sent when the session was revoked (signed out, device revoked or
+/// blocked). The token is dead: do not reconnect.
+pub const WS_CLOSE_SESSION_REVOKED: u16 = 4001;
 /// Capacity of the socket event buffer (`MutableSharedFlow(extraBufferCapacity=256)`).
 pub const WS_EVENT_BUFFER: usize = 256;
-/// Client sends a `ping` after this much outbound silence.
+/// Client sends a `ping` after this much outbound silence, unless `hello.limits`
+/// announces a different heartbeat.
 pub const PING_AFTER_OUTBOUND_SILENCE: Duration = Duration::from_secs(30);
 
 // ---- Validation limits -------------------------------------------------------
@@ -21,12 +30,13 @@ pub const PING_AFTER_OUTBOUND_SILENCE: Duration = Duration::from_secs(30);
 pub const DEFAULT_MAX_DISPLAY_NAME: usize = 64;
 /// Max group name length in Unicode code points.
 pub const DEFAULT_MAX_GROUP_NAME: usize = 100;
-/// Max members per group.
-pub const DEFAULT_MAX_MEMBERS: usize = 200;
-/// Max message body length in Unicode code points.
-pub const DEFAULT_MAX_MESSAGE: usize = 2000;
+/// Max members per group (server default; per group in `limits.memberCap`).
+pub const DEFAULT_MAX_MEMBERS: usize = 100;
+/// Max message body length in Unicode code points (server default; per group and
+/// role in `limits.messageMaxLength`).
+pub const DEFAULT_MAX_MESSAGE: usize = 1000;
 /// Composer shows a "near limit" warning from this many code points.
-pub const MESSAGE_NEAR_LIMIT: usize = 1800;
+pub const MESSAGE_NEAR_LIMIT: usize = 900;
 /// Max phone numbers per `contacts/check` or `members` add batch.
 pub const DEFAULT_MAX_PHONES: usize = 100;
 

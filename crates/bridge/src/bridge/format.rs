@@ -76,7 +76,7 @@ pub fn render_inbound(label: &str, body: &str, group_prefix: Option<&str>) -> St
     s
 }
 
-/// Telegram caps a message at 4096 chars; Tzibbur bodies are ≤ 2000 so a single split is enough.
+/// Telegram caps a message at 4096 chars; Tzibbur bodies are ≤ 1000 (plus the sender prefix) so a single split is enough.
 pub fn chunk(s: &str, max: usize) -> Vec<String> {
     if s.chars().count() <= max {
         return vec![s.to_owned()];

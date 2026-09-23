@@ -1,25 +1,39 @@
-//! WebSocket protocol (`wss://api.tzibbur.me/v1/ws`, protocol version 1).
+//! WebSocket protocol (`wss://api.tzibbur.me/v1/ws`, protocol version 1), as
+//! specified in §10 of the official integration guide
+//! (<https://api.tzibbur.me/integration>).
 //!
 //! ```text
 //! Idle → Connecting → Connected ⟲ BackingOff
 //!                  ↘ UpdateRequired
 //! ```
 //!
+//! The socket is the push transport: after `hello` the server pushes every
+//! undelivered batch on its own, and new messages arrive as they are sent. There
+//! is nothing to poll. The server keeps at most one un-acked batch in flight per
+//! group, so every `messages` frame must be answered with an `ack` frame for its
+//! last seq (the sync engine does this).
+//!
 //! * Bearer token is sent as an `Authorization` header at handshake.
-//! * A 401 at handshake invalidates the session (no reconnect).
-//! * Close code 4029 means "too many connections" and is retried with backoff.
-//! * The client sends `ping` after [`PING_AFTER_OUTBOUND_SILENCE`] of outbound silence.
-//! * An `error` frame whose code indicates a version mismatch moves the socket
-//!   to [`SyncState::UpdateRequired`], which is sticky across `stop()`/`start()`.
+//! * A 401 or 403 (`device_blocked`) at handshake, or close code 4001 (session
+//!   revoked), invalidates the session: no reconnect.
+//! * A 429 at handshake waits for `Retry-After` before the next attempt.
+//! * Close code 4029 ("too many connections") waits at least
+//!   [`TOO_MANY_CONNECTIONS_WAIT`] before trying again.
+//! * Every other close or drop reconnects with jittered exponential backoff.
+//! * The client sends `ping` after `hello.limits.heartbeatSeconds` of outbound
+//!   silence (default [`PING_AFTER_OUTBOUND_SILENCE`]) and answers server pings.
+//! * A `hello` with a newer protocol version, or an `error` frame whose code
+//!   indicates a version mismatch, moves the socket to
+//!   [`SyncState::UpdateRequired`], which is sticky across `stop()`/`start()`.
 
 use crate::backoff::backoff_delay;
 use crate::constants::{
-    PING_AFTER_OUTBOUND_SILENCE, WS_CLOSE_TOO_MANY_CONNECTIONS, WS_EVENT_BUFFER,
-    WS_PROTOCOL_VERSION,
+    PING_AFTER_OUTBOUND_SILENCE, WS_CLOSE_SESSION_REVOKED, WS_CLOSE_TOO_MANY_CONNECTIONS,
+    WS_EVENT_BUFFER, WS_PROTOCOL_VERSION,
 };
 use crate::error::{AppError, Result};
 use crate::http::TzibburClient;
-use crate::models::{MemberDto, MessageDto, Permission, Role};
+use crate::models::{GroupSettings, MemberDto, MessageDto, Permission, Role};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -38,15 +52,23 @@ use url::Url;
 // Frames
 // ---------------------------------------------------------------------------
 
+/// Minimum wait before reconnecting after close code 4029 (too many connections).
+pub const TOO_MANY_CONNECTIONS_WAIT: Duration = Duration::from_secs(60);
+
 /// Client → server frames.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum ClientFrame {
-    /// Sent after outbound silence.
+    /// Liveness probe; answered with `pong`.
     Ping,
-    /// Mark messages in `group_id` read up to `seq`.
+    /// Delivery acknowledgement: this device stored everything in `group_id` up to
+    /// `seq`. The only thing that advances the delivery cursor.
     #[serde(rename_all = "camelCase")]
     Ack { group_id: String, seq: i64 },
+    /// The user has read `group_id` up to `seq` (per user; moves the badge on their
+    /// other devices). Not a delivery ack.
+    #[serde(rename_all = "camelCase")]
+    Read { group_id: String, seq: i64 },
 }
 
 /// Server → client frames.
@@ -78,11 +100,18 @@ pub enum ServerFrame {
         #[serde(default)]
         has_more: bool,
     },
-    /// Group lifecycle event.
+    /// Group lifecycle event. The payload fields sit directly on the frame beside
+    /// `type` and `event`; a nested `payload` object is accepted as well.
     Group {
         event: String,
-        #[serde(default)]
-        payload: Map<String, Value>,
+        #[serde(flatten)]
+        fields: Map<String, Value>,
+    },
+    /// The user's read position moved on another of their devices.
+    #[serde(rename_all = "camelCase")]
+    Read {
+        group_id: String,
+        read_seq: i64,
     },
     /// Protocol-level error (e.g. version mismatch).
     Error {
@@ -107,13 +136,19 @@ pub struct HelloLimits {
 /// Typed view of a `group` frame.
 #[derive(Debug, Clone, PartialEq)]
 pub enum GroupEvent {
+    /// Someone joined. The official frame carries `userId` and `role`; `member` is
+    /// only present on servers that embed the full member object.
     MemberAdded {
         group_id: String,
-        member: MemberDto,
+        user_id: String,
+        role: Option<Role>,
+        member: Option<MemberDto>,
     },
+    /// Someone left (`reason: "left"`) or was removed (`"removed"`).
     MemberRemoved {
         group_id: String,
         user_id: String,
+        reason: Option<String>,
     },
     RoleChanged {
         group_id: String,
@@ -167,8 +202,14 @@ impl GroupEvent {
         }
     }
 
-    /// Parse `event` + `payload` from a `group` frame (or a pending-events entry).
-    pub fn parse(event: &str, payload: Map<String, Value>) -> Self {
+    /// Parse `event` + its fields from a `group` frame (or a pending-events entry).
+    /// Fields nested under a `payload` object are merged in.
+    pub fn parse(event: &str, mut payload: Map<String, Value>) -> Self {
+        if let Some(Value::Object(inner)) = payload.remove("payload") {
+            for (k, v) in inner {
+                payload.entry(k).or_insert(v);
+            }
+        }
         let gid = payload
             .get("groupId")
             .and_then(Value::as_str)
@@ -181,17 +222,31 @@ impl GroupEvent {
         };
         match (event, gid.clone()) {
             (Self::MEMBER_ADDED, Some(group_id)) => {
-                match payload
+                let member = payload
                     .get("member")
                     .cloned()
-                    .map(serde_json::from_value::<MemberDto>)
-                {
-                    Some(Ok(member)) => GroupEvent::MemberAdded { group_id, member },
-                    _ => unknown(payload),
+                    .and_then(|m| serde_json::from_value::<MemberDto>(m).ok());
+                let user_id =
+                    str_field("userId").or_else(|| member.as_ref().map(|m| m.user_id.clone()));
+                let role = str_field("role")
+                    .and_then(|r| Role::parse(&r))
+                    .or_else(|| member.as_ref().map(|m| m.role));
+                match user_id {
+                    Some(user_id) => GroupEvent::MemberAdded {
+                        group_id,
+                        user_id,
+                        role,
+                        member,
+                    },
+                    None => unknown(payload),
                 }
             }
             (Self::MEMBER_REMOVED, Some(group_id)) => match str_field("userId") {
-                Some(user_id) => GroupEvent::MemberRemoved { group_id, user_id },
+                Some(user_id) => GroupEvent::MemberRemoved {
+                    group_id,
+                    user_id,
+                    reason: str_field("reason"),
+                },
                 None => unknown(payload),
             },
             (Self::ROLE_CHANGED, Some(group_id)) => {
@@ -207,12 +262,23 @@ impl GroupEvent {
                     _ => unknown(payload),
                 }
             }
-            (Self::GROUP_UPDATED, Some(group_id)) => GroupEvent::GroupUpdated {
-                group_id,
-                name: str_field("name"),
-                who_can_post: str_field("whoCanPost").map(Permission),
-                who_can_add_members: str_field("whoCanAddMembers").map(Permission),
-            },
+            (Self::GROUP_UPDATED, Some(group_id)) => {
+                let settings: GroupSettings = payload
+                    .get("settings")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
+                    .unwrap_or_default();
+                GroupEvent::GroupUpdated {
+                    group_id,
+                    name: str_field("name"),
+                    who_can_post: settings
+                        .who_can_post
+                        .or_else(|| str_field("whoCanPost").map(Permission)),
+                    who_can_add_members: settings
+                        .who_can_add_members
+                        .or_else(|| str_field("whoCanAddMembers").map(Permission)),
+                }
+            }
             (Self::GROUP_DELETED, Some(group_id)) => GroupEvent::GroupDeleted { group_id },
             _ => unknown(payload),
         }
@@ -235,6 +301,11 @@ pub enum DisconnectReason {
     },
     /// Server demanded a client update; the socket will not reconnect.
     UpdateRequired,
+    /// The token is dead (401 at handshake, close code 4001) or the device was
+    /// blocked (403 `device_blocked`); the socket will not reconnect.
+    SessionRevoked {
+        blocked: bool,
+    },
 }
 
 impl DisconnectReason {
@@ -257,11 +328,18 @@ pub enum SocketEvent {
     Disconnected {
         reason: DisconnectReason,
     },
+    /// A batch of undelivered messages. Ack the last seq on the socket.
     Messages {
         group_id: String,
         messages: Vec<MessageDto>,
+        has_more: bool,
     },
     GroupEvent(GroupEvent),
+    /// The user's read position moved elsewhere (another device or a REST call).
+    Read {
+        group_id: String,
+        read_seq: i64,
+    },
 }
 
 /// Connection / sync state (the `SyncState` sealed class).
@@ -410,6 +488,24 @@ impl TzibburSocket {
         .await
     }
 
+    /// Queue a `read` frame (the user read `group_id` up to `seq`).
+    pub async fn read(&self, group_id: &str, seq: i64) -> Result<()> {
+        self.send(ClientFrame::Read {
+            group_id: group_id.to_owned(),
+            seq,
+        })
+        .await
+    }
+
+    /// Drop the current connection and connect again (the server then redelivers
+    /// every un-acked batch). No-op when the socket is not running.
+    pub async fn reconnect(&self) {
+        if self.is_running() {
+            self.stop().await;
+            self.start();
+        }
+    }
+
     /// Queue a `ping` frame.
     pub async fn ping(&self) -> Result<()> {
         self.send(ClientFrame::Ping).await
@@ -437,6 +533,24 @@ fn set_state(shared: &Shared, s: SyncState) {
 
 fn emit(shared: &Shared, ev: SocketEvent) {
     let _ = shared.events.send(ev);
+}
+
+/// What the connection loop does after a connection ends.
+enum After {
+    /// Reconnect after the normal jittered backoff.
+    Backoff,
+    /// Reconnect, but wait at least this long first.
+    WaitAtLeast(Duration),
+    /// Do not reconnect.
+    Stop,
+}
+
+fn retry_after(resp: &http::Response<Option<Vec<u8>>>) -> Option<Duration> {
+    resp.headers()
+        .get(http::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
 }
 
 async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
@@ -468,17 +582,6 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
         if let Ok(v) = shared.client.user_agent().parse() {
             req.headers_mut().insert(http::header::USER_AGENT, v);
         }
-        for (k, v) in shared.client.device().headers() {
-            if let (Ok(name), Ok(val)) = (
-                http::header::HeaderName::from_bytes(k.as_bytes()),
-                v.parse::<http::HeaderValue>(),
-            ) {
-                req.headers_mut().insert(name, val);
-            }
-        }
-        if let Ok(v) = WS_PROTOCOL_VERSION.to_string().parse() {
-            req.headers_mut().insert("X-Tzibbur-Protocol-Version", v);
-        }
 
         let connect = tokio::select! {
             r = tokio_tungstenite::connect_async(req) => r,
@@ -487,20 +590,47 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
 
         let ws = match connect {
             Ok((ws, _resp)) => ws,
-            Err(tokio_tungstenite::tungstenite::Error::Http(resp))
-                if resp.status() == http::StatusCode::UNAUTHORIZED =>
-            {
-                tracing::warn!("socket: 401 at handshake, invalidating session");
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                let status = resp.status();
+                if status == http::StatusCode::UNAUTHORIZED || status == http::StatusCode::FORBIDDEN
+                {
+                    let blocked = status == http::StatusCode::FORBIDDEN;
+                    tracing::warn!(
+                        status = status.as_u16(),
+                        "socket: refused at handshake, invalidating session"
+                    );
+                    emit(
+                        &shared,
+                        SocketEvent::Disconnected {
+                            reason: DisconnectReason::SessionRevoked { blocked },
+                        },
+                    );
+                    shared.client.notify_session_invalidated();
+                    break;
+                }
+                let wait = if status == http::StatusCode::TOO_MANY_REQUESTS {
+                    retry_after(&resp)
+                } else {
+                    None
+                };
+                tracing::warn!(
+                    status = status.as_u16(),
+                    ?wait,
+                    attempt,
+                    "socket: handshake refused"
+                );
                 emit(
                     &shared,
                     SocketEvent::Disconnected {
                         reason: DisconnectReason::Error {
-                            cause: Some("401 Unauthorized".into()),
+                            cause: Some(format!("HTTP {status}")),
                         },
                     },
                 );
-                shared.client.notify_session_invalidated();
-                break;
+                if !backoff_wait(&shared, &mut stop_rx, &mut attempt, wait).await {
+                    break;
+                }
+                continue;
             }
             Err(e) => {
                 tracing::warn!(error = %e, attempt, "socket: connect failed");
@@ -512,7 +642,7 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                         },
                     },
                 );
-                if !backoff_wait(&shared, &mut stop_rx, &mut attempt).await {
+                if !backoff_wait(&shared, &mut stop_rx, &mut attempt, None).await {
                     break;
                 }
                 continue;
@@ -521,12 +651,14 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
 
         let (mut sink, mut stream) = ws.split();
         let mut last_outbound = Instant::now();
-        let mut got_hello = false;
+        let mut conn = ConnState {
+            got_hello: false,
+            heartbeat: PING_AFTER_OUTBOUND_SILENCE,
+        };
         let reason: DisconnectReason;
-        let mut update_required = false;
 
         loop {
-            let ping_at = last_outbound + PING_AFTER_OUTBOUND_SILENCE;
+            let ping_at = last_outbound + conn.heartbeat;
             tokio::select! {
                 _ = stop_rx.changed() => {
                     let _ = sink.send(Message::Close(Some(CloseFrame { code: CloseCode::Normal, reason: "client stop".into() }))).await;
@@ -559,7 +691,7 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                     last_outbound = Instant::now();
                 }
                 msg = stream.next() => {
-                    match msg {
+                    let frame = match msg {
                         None => { reason = DisconnectReason::Closed { code: None, message: None }; break; }
                         Some(Err(e)) => { reason = DisconnectReason::Error { cause: Some(e.to_string()) }; break; }
                         Some(Ok(Message::Close(cf))) => {
@@ -570,40 +702,79 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                         Some(Ok(Message::Ping(p))) => {
                             let _ = sink.send(Message::Pong(p)).await;
                             last_outbound = Instant::now();
+                            None
                         }
-                        Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => {}
-                        Some(Ok(Message::Binary(b))) => {
-                            if let Some(f) = decode_frame(&b) {
-                                if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; }
-                            }
+                        Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => None,
+                        Some(Ok(Message::Binary(b))) => decode_frame(&b),
+                        Some(Ok(Message::Text(t))) => decode_frame(t.as_bytes()),
+                    };
+                    if let Some(f) = frame {
+                        if let Some(r) = handle_frame(&shared, f, &mut conn, &mut attempt) {
+                            reason = r;
+                            break;
                         }
-                        Some(Ok(Message::Text(t))) => {
-                            if let Some(f) = decode_frame(t.as_bytes()) {
-                                if let Some(r) = handle_frame(&shared, f, &mut got_hello, &mut attempt) { update_required = true; reason = r; break; }
-                            }
-                        }
-
                     }
                 }
             }
         }
 
-        if reason.is_too_many_connections() {
-            tracing::warn!("socket: closed with 4029 (too many connections)");
-        }
-        emit(&shared, SocketEvent::Disconnected { reason });
-
-        if update_required {
-            set_state(&shared, SyncState::UpdateRequired);
-            break;
+        let after = match &reason {
+            DisconnectReason::UpdateRequired => {
+                set_state(&shared, SyncState::UpdateRequired);
+                After::Stop
+            }
+            DisconnectReason::Closed {
+                code: Some(WS_CLOSE_SESSION_REVOKED),
+                ..
+            } => {
+                tracing::warn!("socket: closed with 4001 (session revoked)");
+                After::Stop
+            }
+            r if r.is_too_many_connections() => {
+                tracing::warn!("socket: closed with 4029 (too many connections for this device)");
+                After::WaitAtLeast(TOO_MANY_CONNECTIONS_WAIT)
+            }
+            _ => After::Backoff,
+        };
+        let revoked = matches!(
+            reason,
+            DisconnectReason::Closed {
+                code: Some(WS_CLOSE_SESSION_REVOKED),
+                ..
+            }
+        );
+        emit(
+            &shared,
+            SocketEvent::Disconnected {
+                reason: if revoked {
+                    DisconnectReason::SessionRevoked { blocked: false }
+                } else {
+                    reason
+                },
+            },
+        );
+        if revoked {
+            shared.client.notify_session_invalidated();
         }
         if *stop_rx.borrow() {
             break;
         }
-        if !backoff_wait(&shared, &mut stop_rx, &mut attempt).await {
+        let min_wait = match after {
+            After::Stop => break,
+            After::WaitAtLeast(d) => Some(d),
+            After::Backoff => None,
+        };
+        if !backoff_wait(&shared, &mut stop_rx, &mut attempt, min_wait).await {
             break;
         }
     }
+}
+
+/// Per-connection state.
+struct ConnState {
+    got_hello: bool,
+    /// Ping after this much outbound silence (`hello.limits.heartbeatSeconds`).
+    heartbeat: Duration,
 }
 
 /// Decode a server frame leniently: unknown `type`s that still carry `messages`
@@ -664,7 +835,7 @@ fn decode_frame(bytes: &[u8]) -> Option<ServerFrame> {
 fn handle_frame(
     shared: &Shared,
     frame: ServerFrame,
-    got_hello: &mut bool,
+    conn: &mut ConnState,
     attempt: &mut u32,
 ) -> Option<DisconnectReason> {
     match frame {
@@ -674,14 +845,18 @@ fn handle_frame(
             device_id,
             limits,
         } => {
-            if protocol_version != WS_PROTOCOL_VERSION {
+            if protocol_version > WS_PROTOCOL_VERSION {
                 tracing::warn!(
                     server = protocol_version,
                     client = WS_PROTOCOL_VERSION,
-                    "socket: protocol version differs"
+                    "socket: server speaks a newer protocol; update required"
                 );
+                return Some(DisconnectReason::UpdateRequired);
             }
-            *got_hello = true;
+            if let Some(hb) = limits.heartbeat_seconds.filter(|s| *s > 0) {
+                conn.heartbeat = Duration::from_secs(hb as u64);
+            }
+            conn.got_hello = true;
             *attempt = 0;
             emit(
                 shared,
@@ -702,12 +877,9 @@ fn handle_frame(
             messages,
             has_more,
         } => {
-            if has_more {
-                tracing::debug!(%group_id, "socket: messages frame has more; catch-up will page");
-            }
-            if !*got_hello {
+            if !conn.got_hello {
                 // Some servers may skip hello; treat first payload as connected.
-                *got_hello = true;
+                conn.got_hello = true;
                 *attempt = 0;
                 set_state(shared, SyncState::Connected);
                 emit(shared, SocketEvent::Connected);
@@ -719,35 +891,55 @@ fn handle_frame(
                     m
                 })
                 .collect();
-            emit(shared, SocketEvent::Messages { group_id, messages });
-            None
-        }
-        ServerFrame::Group { event, payload } => {
             emit(
                 shared,
-                SocketEvent::GroupEvent(GroupEvent::parse(&event, payload)),
+                SocketEvent::Messages {
+                    group_id,
+                    messages,
+                    has_more,
+                },
             );
+            None
+        }
+        ServerFrame::Group { event, fields } => {
+            emit(
+                shared,
+                SocketEvent::GroupEvent(GroupEvent::parse(&event, fields)),
+            );
+            None
+        }
+        ServerFrame::Read { group_id, read_seq } => {
+            emit(shared, SocketEvent::Read { group_id, read_seq });
             None
         }
         ServerFrame::Error { code, detail } => {
             tracing::warn!(%code, ?detail, "socket: error frame");
             if is_update_required_code(&code) {
                 Some(DisconnectReason::UpdateRequired)
+            } else if code == "push_failed" {
+                // The server could not load our pending messages: reconnect to retry.
+                Some(DisconnectReason::Error { cause: Some(code) })
             } else {
+                // ack_failed / read_failed / rate_limited / bad frames: not fatal.
                 None
             }
         }
     }
 }
 
-/// Sleep with backoff; returns `false` if stop was requested meanwhile.
+/// Sleep with backoff (at least `min_wait` when given); returns `false` if stop was
+/// requested meanwhile.
 async fn backoff_wait(
     shared: &Shared,
     stop_rx: &mut watch::Receiver<bool>,
     attempt: &mut u32,
+    min_wait: Option<Duration>,
 ) -> bool {
     set_state(shared, SyncState::BackingOff);
-    let delay: Duration = backoff_delay(*attempt);
+    let mut delay: Duration = backoff_delay(*attempt);
+    if let Some(min) = min_wait {
+        delay = delay.max(min);
+    }
     *attempt = attempt.saturating_add(1);
     tracing::debug!(?delay, attempt = *attempt, "socket: backing off");
     tokio::select! {
@@ -799,9 +991,9 @@ mod tests {
             r#"{"type":"group","event":"role-changed","payload":{"groupId":"g","userId":"u","role":"ADMIN"}}"#,
         )
         .unwrap();
-        if let ServerFrame::Group { event, payload } = f {
+        if let ServerFrame::Group { event, fields } = f {
             assert_eq!(
-                GroupEvent::parse(&event, payload),
+                GroupEvent::parse(&event, fields),
                 GroupEvent::RoleChanged {
                     group_id: "g".into(),
                     user_id: "u".into(),
@@ -811,6 +1003,63 @@ mod tests {
         } else {
             panic!();
         }
+    }
+
+    #[test]
+    fn official_group_frames() {
+        let parse = |j: &str| match serde_json::from_str::<ServerFrame>(j).unwrap() {
+            ServerFrame::Group { event, fields } => GroupEvent::parse(&event, fields),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            parse(
+                r#"{"type":"group","event":"member-added","groupId":"g","userId":"u","role":"member","joinedSeq":4,"actorId":"a"}"#
+            ),
+            GroupEvent::MemberAdded {
+                group_id: "g".into(),
+                user_id: "u".into(),
+                role: Some(Role::Member),
+                member: None
+            }
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"group","event":"member-removed","groupId":"g","userId":"u","actorId":null,"reason":"left"}"#
+            ),
+            GroupEvent::MemberRemoved {
+                group_id: "g".into(),
+                user_id: "u".into(),
+                reason: Some("left".into())
+            }
+        );
+        assert_eq!(
+            parse(
+                r#"{"type":"group","event":"group-updated","groupId":"g","name":"N","settings":{"whoCanPost":"admins","whoCanAddMembers":"everyone"},"actorId":"a"}"#
+            ),
+            GroupEvent::GroupUpdated {
+                group_id: "g".into(),
+                name: Some("N".into()),
+                who_can_post: Some(Permission::admins()),
+                who_can_add_members: Some(Permission::everyone())
+            }
+        );
+        let f: ServerFrame =
+            serde_json::from_str(r#"{"type":"read","groupId":"g","readSeq":9}"#).unwrap();
+        assert_eq!(
+            f,
+            ServerFrame::Read {
+                group_id: "g".into(),
+                read_seq: 9
+            }
+        );
+        assert_eq!(
+            serde_json::to_string(&ClientFrame::Read {
+                group_id: "g".into(),
+                seq: 3
+            })
+            .unwrap(),
+            r#"{"type":"read","groupId":"g","seq":3}"#
+        );
     }
 
     #[test]

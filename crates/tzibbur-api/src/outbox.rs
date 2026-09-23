@@ -1,12 +1,17 @@
 //! `OutboxDispatcher`: drains the `outbox` table through `POST /v1/groups/{id}/messages`
 //! with exponential backoff, stale in-flight recovery and a wake-up signal.
+//!
+//! Every retry reuses the row's `clientMessageId`, on which the server is
+//! idempotent (a retry of a message that already arrived returns the original with
+//! `duplicate: true`), so a message is never posted twice. The idle wake-up only
+//! reads the local table; it makes no request unless a row is due.
 
 use crate::backoff::backoff_delay;
 use crate::constants::{FALLBACK_POLL, IN_FLIGHT_STALE};
 use crate::error::{AppError, Result};
 use crate::http::TzibburClient;
-use crate::models::{now_epoch_ms, MessageDto};
-use crate::store::{LocalStore, MessageEntity, OutboxEntity, OutboxState};
+use crate::models::{now_epoch_ms, CommandResult, MessageDto, SendOutcome};
+use crate::store::{LocalCommandReplyEntity, LocalStore, MessageEntity, OutboxEntity, OutboxState};
 use crate::validation::{validate_message_body, TextValidation};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -32,6 +37,14 @@ pub enum OutboxEvent {
         client_message_id: String,
         message: MessageDto,
     },
+    /// The body was an in-chat command (`#add …`, `#help`, …): the server executed it
+    /// and stored nothing. The outbox row is removed and the reply is kept in
+    /// `local_command_replies`; show `result.text` as a Tzibbur System note.
+    Command {
+        client_message_id: String,
+        group_id: String,
+        result: CommandResult,
+    },
     /// Permanent failure; row stays `Failed` until retried by the user.
     Rejected {
         client_message_id: String,
@@ -45,6 +58,9 @@ pub enum OutboxEvent {
         code: String,
     },
 }
+
+/// Resends of a message whose 2xx reply could not be decoded before giving up.
+const MAX_UNDECODABLE_ATTEMPTS: i64 = 5;
 
 pub struct OutboxDispatcher {
     client: TzibburClient,
@@ -151,27 +167,6 @@ impl OutboxDispatcher {
         }
     }
 
-    /// Look for our message among the group's latest messages (by clientMessageId).
-    async fn verify_delivered(&self, row: &OutboxEntity) -> Result<Option<MessageDto>> {
-        let page = self
-            .client
-            .get_messages(
-                &row.group_id,
-                &crate::models::MessagesQuery::default().limit(100),
-            )
-            .await?;
-        let found = page
-            .into_iter()
-            .find(|m| m.client_message_id.as_deref() == Some(row.client_message_id.as_str()));
-        if let Some(m) = &found {
-            let entity = MessageEntity::from_dto(m.clone(), &row.group_id);
-            let _ = self
-                .store
-                .store_incoming_batch(&row.group_id, vec![entity])?;
-        }
-        Ok(found)
-    }
-
     /// Dispatch at most one row.
     pub async fn step(&self) -> Result<Step> {
         let now = now_epoch_ms();
@@ -187,19 +182,30 @@ impl OutboxDispatcher {
         }
         self.store.mark_in_flight(&row.client_message_id, now)?;
 
-        // A row the server is known to hold already: only verify, never POST again.
-        let send = if matches!(
-            row.error_code.as_deref(),
-            Some("client-message-id-reused") | Some("json")
-        ) {
-            Err(AppError::ClientMessageIdReused { request_id: None })
-        } else {
-            self.client
-                .send_message(&row.group_id, &row.client_message_id, &row.body)
-                .await
-        };
+        let send = self
+            .client
+            .send_message(&row.group_id, &row.client_message_id, &row.body)
+            .await;
         match send {
-            Ok(msg) => {
+            Ok(SendOutcome::Command(result)) => {
+                self.store.delete_outbox(&row.client_message_id)?;
+                let _ = self.store.insert_command_reply(&LocalCommandReplyEntity {
+                    id: None,
+                    group_id: row.group_id.clone(),
+                    command_name: result.name.clone(),
+                    ok: result.ok,
+                    code: result.code.clone(),
+                    params_json: serde_json::to_string(&result.params).ok(),
+                    text: result.text.clone(),
+                    created_at: now_epoch_ms(),
+                });
+                let _ = self.events.send(OutboxEvent::Command {
+                    client_message_id: row.client_message_id,
+                    group_id: row.group_id,
+                    result,
+                });
+            }
+            Ok(SendOutcome::Stored { message: msg, .. }) => {
                 // Store through the reconciler so the echo path confirms the row; then make sure.
                 let entity = MessageEntity::from_dto(msg.clone(), &row.group_id);
                 let _ = self
@@ -212,34 +218,22 @@ impl OutboxDispatcher {
                     message: msg,
                 });
             }
-            // `Json` here means the server accepted the POST (2xx) but answered in a shape we
-            // could not decode: the message exists, so verify rather than reject.
-            Err(AppError::ClientMessageIdReused { .. }) | Err(AppError::Json(_)) => {
-                // An earlier attempt got through but we never saw the reply: find it instead of failing.
-                match self.verify_delivered(&row).await {
-                    Ok(Some(msg)) => {
-                        self.store
-                            .confirm_sent(&row.client_message_id, &msg.id, msg.seq)?;
-                        let _ = self.events.send(OutboxEvent::Confirmed {
-                            client_message_id: row.client_message_id,
-                            message: msg,
-                        });
-                    }
-                    Ok(None) => {
-                        let next_at = now_epoch_ms()
-                            + backoff_delay(row.attempt_count as u32).as_millis() as i64;
-                        self.store.reschedule(
-                            &row.client_message_id,
-                            next_at,
-                            Some("client-message-id-reused"),
-                        )?;
-                    }
-                    Err(e) => {
-                        let next_at = now_epoch_ms()
-                            + backoff_delay(row.attempt_count as u32).as_millis() as i64;
-                        self.store
-                            .reschedule(&row.client_message_id, next_at, Some(e.code()))?;
-                    }
+            // The server accepted the POST (2xx) but the reply did not decode. Resending
+            // with the same clientMessageId is safe (the server answers with the stored
+            // original), but give up after a few tries rather than loop forever.
+            Err(e @ AppError::Json(_)) => {
+                if row.attempt_count >= MAX_UNDECODABLE_ATTEMPTS {
+                    tracing::warn!(id = %row.client_message_id, error = %e, "outbox: reply never decoded; giving up");
+                    self.store.mark_rejected(&row.client_message_id, e.code())?;
+                    let _ = self.events.send(OutboxEvent::Rejected {
+                        client_message_id: row.client_message_id,
+                        code: e.code().into(),
+                    });
+                } else {
+                    let next_at =
+                        now_epoch_ms() + backoff_delay(row.attempt_count as u32).as_millis() as i64;
+                    self.store
+                        .reschedule(&row.client_message_id, next_at, Some(e.code()))?;
                 }
             }
             Err(e) if e.is_retryable() => {

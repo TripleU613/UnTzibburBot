@@ -10,7 +10,7 @@ crates/
                  sync engine, outbox (README inside)
   bridge/        the Telegram bot: teloxide handlers, per-account runtimes, Directus store
 assets/          logo, avatar (for @BotFather), banner, README screens
-docs/            Tzibbur API reference, decompiled app notes
+docs/            How the client uses the official Tzibbur API, old decompiled app notes
 .github/         CI (fmt, clippy -D warnings, tests, docker build) and Deploy
 ```
 
@@ -31,17 +31,26 @@ Telegram topic  ──▶ handlers   ──▶ AccountRuntime ──▶ outbox �
 
 ## Tzibbur protocol notes
 
-The full protocol reference is [`docs/tzibbur-api.md`](docs/tzibbur-api.md); the decompiled
-notes it was reconciled against are [`docs/android-app-notes.md`](docs/android-app-notes.md).
-The points that bite:
+Tzibbur publishes an official API contract: the integration guide at
+<https://api.tzibbur.me/integration> and the OpenAPI spec at
+<https://api.tzibbur.me/docs/openapi.json>. Those are authoritative; [`docs/tzibbur-api.md`](docs/tzibbur-api.md)
+only records how this client uses them. (The old decompiled notes in
+[`docs/android-app-notes.md`](docs/android-app-notes.md) are historical.) The points that bite:
 
-- Enums are lowercase (`admin`, `system`, `everyone`). Group settings are nested.
-- `POST /v1/auth/start` and `/verify` require `platform` and `deviceModel`.
+- **Be gentle with the server.** Delivery is push: one WebSocket per account, which
+  pushes the backlog after `hello` and new messages as they arrive. The engine never
+  polls while the socket is up. Only when the socket is down does it fall back to
+  `GET /v1/pending`, at most every 5 minutes.
+- `ack` is a **delivery** acknowledgement: ack each socket batch *on the socket* with its
+  last seq (the server holds the next batch for that group until then); REST acks are
+  only for batches pulled over REST. `read` (frame or `POST /v1/groups/{id}/read`) is the
+  separate per-user read position.
+- Group event frames carry their fields at the top level (`groupId`, `userId`, …) and are
+  never replayed, so the group list is re-fetched once per reconnect.
+- `#add`, `#help` and the other in-chat commands are executed by the server and answered
+  with `200 {"command": …}`; nothing is stored.
 - New groups need `limits.minMembersToPost` members (3) before anyone can post; the
-  server answers `409 group-too-small`.
-- `ack` is a **delivery** acknowledgement. It advances the device's `deliveredSeq`; a device
-  that never acks is re-sent everything on each connect. The engine acks every stored batch
-  and sweeps with REST acks every minute.
+  server answers `409 group_too_small`.
 - Message bodies arrive prefixed with the sender's name (`"Name: text"`).
 
 ## Running locally

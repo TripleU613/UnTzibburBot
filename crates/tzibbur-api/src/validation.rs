@@ -55,7 +55,7 @@ pub fn validate_group_name(input: &str) -> TextValidation {
     validate_text(input, DEFAULT_MAX_GROUP_NAME)
 }
 
-/// Max 2000 code points.
+/// Max [`DEFAULT_MAX_MESSAGE`] code points (the server's default; a group may allow less).
 pub fn validate_message_body(input: &str) -> TextValidation {
     validate_text(input, DEFAULT_MAX_MESSAGE)
 }
@@ -139,8 +139,9 @@ mod tests {
             TextValidation::TooLong { count: 65, max: 64 }
         );
         assert!(validate_group_name(&"x".repeat(100)).is_valid());
-        assert!(!validate_message_body(&"x".repeat(2001)).is_valid());
-        assert!(composer_info(&"x".repeat(1800)).is_near_limit);
+        assert!(validate_message_body(&"x".repeat(1000)).is_valid());
+        assert!(!validate_message_body(&"x".repeat(1001)).is_valid());
+        assert!(composer_info(&"x".repeat(900)).is_near_limit);
     }
 
     #[test]

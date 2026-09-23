@@ -1,9 +1,14 @@
-//! REST client for `https://api.tzibbur.me`.
+//! REST client for the official Tzibbur API (`https://api.tzibbur.me/v1`), following
+//! the integration guide at <https://api.tzibbur.me/integration> and the OpenAPI spec
+//! at <https://api.tzibbur.me/docs/openapi.json>.
 //!
 //! Every authenticated call sends `Authorization: Bearer {token}`. Errors are
-//! parsed from RFC 7807 bodies via [`AppError::from_problem`]. A 401 on any
-//! request notifies the registered [`SessionInvalidationListener`] (the
-//! mobile client wipes the session in response).
+//! parsed from RFC 9457 bodies via [`AppError::from_problem`]. A 401 (or a 403
+//! `device_blocked`) on any request notifies the registered
+//! [`SessionInvalidationListener`].
+//!
+//! Live delivery belongs to the WebSocket ([`crate::ws`]); REST is for actions and
+//! for catching up when no socket can be held. Nothing here polls on its own.
 
 use crate::constants::{DEFAULT_BASE_URL, DEFAULT_MAX_PHONES};
 use crate::error::{AppError, ProblemDto, Result};
@@ -30,60 +35,49 @@ impl<F: Fn() + Send + Sync> SessionInvalidationListener for F {
     }
 }
 
-/// How the client presents itself to the server (what shows up under
-/// `GET /v1/me/devices` as `platform` / `deviceModel`). Defaults mimic the
-/// Android app so the bridge registers as an Android device.
+/// What the client reports at enrollment (`platform` and `deviceModel` on
+/// `POST /v1/auth/start` / `verify`, shown under `GET /v1/me/devices`).
+///
+/// The official guide asks for an accurate, stable `deviceModel` (1–80 code
+/// points), never a per-request or random value. `platform` is one of `kosher`,
+/// `android`, `ios`, `web`; `web` sessions expire every 15 minutes and need a
+/// captcha, so a headless client should use a native platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
-    /// `android` | `ios` | `web` | `kosher` …
+    /// `kosher` | `android` | `ios` | `web`
     pub platform: String,
-    /// e.g. `Pixel 7`
+    /// Stable description of this client, e.g. `UnTzibburBot (Telegram bridge)`.
     pub model: String,
-    /// App version the server sees, e.g. `0.1.0`
+    /// Client version, used in the User-Agent.
     pub app_version: String,
-    /// OS version string, e.g. `14`
-    pub os_version: String,
 }
 
 impl Default for DeviceInfo {
     fn default() -> Self {
-        Self::android()
+        Self {
+            platform: "android".into(),
+            model: "tzibbur-api-rs".into(),
+            app_version: env!("CARGO_PKG_VERSION").into(),
+        }
     }
 }
 
 impl DeviceInfo {
-    /// The reverse-engineered app: `com.tzibbur.app` 0.1.0 on a Pixel 7 / Android 14.
-    pub fn android() -> Self {
+    /// A device with the given platform and model.
+    pub fn new(platform: impl Into<String>, model: impl Into<String>) -> Self {
         Self {
-            platform: "android".into(),
-            model: "Pixel 7".into(),
-            app_version: "0.1.0".into(),
-            os_version: "14".into(),
+            platform: platform.into(),
+            model: model.into(),
+            ..Self::default()
         }
     }
 
-    /// `Tzibbur/0.1.0 (Android 14; Pixel 7) Ktor`
+    /// `tzibbur-api-rs/0.3.0 (android; UnTzibburBot (Telegram bridge))`
     pub fn user_agent(&self) -> String {
-        let os = match self.platform.as_str() {
-            "android" => "Android",
-            "ios" => "iOS",
-            other => other,
-        };
         format!(
-            "Tzibbur/{} ({} {}; {}) Ktor",
-            self.app_version, os, self.os_version, self.model
+            "tzibbur-api-rs/{} ({}; {})",
+            self.app_version, self.platform, self.model
         )
-    }
-
-    /// Extra headers sent with every request and the WS handshake.
-    pub fn headers(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("X-Platform", self.platform.clone()),
-            ("X-Device-Platform", self.platform.clone()),
-            ("X-Device-Model", self.model.clone()),
-            ("X-App-Version", self.app_version.clone()),
-            ("X-OS-Version", self.os_version.clone()),
-        ]
     }
 }
 
@@ -299,9 +293,6 @@ impl TzibburClient {
             req = req.header(AUTHORIZATION, format!("Bearer {tok}"));
         }
         req = req.header(USER_AGENT, &self.inner.user_agent);
-        for (k, v) in self.inner.device.headers() {
-            req = req.header(k, v);
-        }
         tracing::debug!(%method, %url, "tzibbur request");
         let resp = req.send().await?;
         let status = resp.status();
@@ -447,6 +438,38 @@ impl TzibburClient {
             Some(u) => Ok(u),
             None => self.me().await,
         }
+    }
+
+    /// `GET /v1/capabilities` with this client's token: the limits and feature
+    /// switches in force for this device. Without a token, pass the platform.
+    pub async fn capabilities(&self) -> Result<Capabilities> {
+        if self.is_signed_in().await {
+            self.get::<_, ()>("v1/capabilities", None).await
+        } else {
+            let r = self
+                .send::<(), _>(
+                    Method::GET,
+                    "v1/capabilities",
+                    Some(&[("platform", self.inner.device.platform.as_str())]),
+                    None,
+                    false,
+                )
+                .await?;
+            Self::json(r).await
+        }
+    }
+
+    /// `POST /v1/sessions/logout` — sign this device out (idempotent).
+    pub async fn logout(&self) -> Result<()> {
+        let _: Option<serde_json::Value> = self
+            .post("v1/sessions/logout", &serde_json::json!({}), true)
+            .await?;
+        Ok(())
+    }
+
+    /// `DELETE /v1/me/devices/{deviceId}` — revoke another of the account's devices.
+    pub async fn revoke_device(&self, device_id: &str) -> Result<()> {
+        self.delete_(&format!("v1/me/devices/{device_id}")).await
     }
 
     /// `GET /v1/me/devices`
@@ -677,32 +700,52 @@ impl TzibburClient {
         Ok(self.get_messages_page(group_id, query).await?.items)
     }
 
-    /// `POST /v1/groups/{id}/messages`. In the mobile app this is only reached
-    /// through the outbox dispatcher; use [`crate::outbox::OutboxDispatcher`]
-    /// for retry/backoff semantics.
+    /// `POST /v1/groups/{id}/messages`.
+    ///
+    /// Idempotent on `client_message_id`: a retry with the same id returns the
+    /// original message (`duplicate: true`), so retrying is always safe. A body that
+    /// is an in-chat command (`#add …`, `#help`, …) is executed instead of stored and
+    /// comes back as [`SendOutcome::Command`]. Use
+    /// [`crate::outbox::OutboxDispatcher`] for retry/backoff semantics.
     pub async fn send_message(
         &self,
         group_id: &str,
         client_message_id: &str,
         body: &str,
-    ) -> Result<MessageDto> {
+    ) -> Result<SendOutcome> {
         let req = SendMessageRequest {
             client_message_id: client_message_id.to_owned(),
             body: body.to_owned(),
         };
-        // The live reply is not always a bare message object: accept `{message: {...}}`,
-        // `{data: {...}}`, an `{id, seq}` stub, or a `{clientMessageId, seq}` ack.
         let raw: serde_json::Value = self
             .post(&format!("v1/groups/{group_id}/messages"), &req, true)
             .await?;
-        let mut m = decode_sent_message(raw, group_id, client_message_id, body)?;
-        m.group_id.get_or_insert_with(|| group_id.to_owned());
-        m.client_message_id
-            .get_or_insert_with(|| client_message_id.to_owned());
-        Ok(m)
+        let mut out = decode_send_outcome(raw)?;
+        if let SendOutcome::Stored { message, .. } = &mut out {
+            message.group_id.get_or_insert_with(|| group_id.to_owned());
+            message
+                .client_message_id
+                .get_or_insert_with(|| client_message_id.to_owned());
+        }
+        Ok(out)
     }
 
-    /// `POST /v1/groups/{id}/ack` — mark read up to `seq`.
+    /// `POST /v1/groups/{id}/read` — move the user's read position (per user, shared
+    /// by all their devices). Not a delivery ack.
+    pub async fn mark_read(&self, group_id: &str, seq: i64) -> Result<()> {
+        let _: Option<serde_json::Value> = self
+            .post(
+                &format!("v1/groups/{group_id}/read"),
+                &ReadRequest { seq },
+                true,
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// `POST /v1/groups/{id}/ack` — delivery acknowledgement: this device has durably
+    /// stored everything up to `seq`. Use only for batches pulled over REST; a batch
+    /// delivered on a WebSocket must be acked on that socket.
     pub async fn ack(&self, group_id: &str, seq: i64) -> Result<()> {
         let _: Option<serde_json::Value> = self
             .post(
@@ -718,7 +761,7 @@ impl TzibburClient {
     // Pending catch-up
     // -----------------------------------------------------------------------
 
-    /// `GET /v1/pending` — events missed while disconnected.
+    /// `GET /v1/pending` — every undelivered message for this device, per group.
     pub async fn pending(&self, limit: Option<u32>) -> Result<PendingResponse> {
         #[derive(Serialize)]
         struct Q {
@@ -729,56 +772,57 @@ impl TzibburClient {
     }
 }
 
-/// Turn whatever `POST /messages` answered into a `MessageDto`.
-fn decode_sent_message(
-    raw: serde_json::Value,
-    group_id: &str,
-    client_message_id: &str,
-    body: &str,
-) -> Result<MessageDto> {
-    let mut v = raw;
-    for key in ["message", "data", "item", "result"] {
-        if v.get(key).map(|x| x.is_object()).unwrap_or(false) {
-            v = v[key].take();
+/// Decode the reply of `POST /v1/groups/{id}/messages`: `{"message": …, "duplicate": …}`
+/// for a stored message, `{"command": …}` for an executed in-chat command. A bare
+/// message object is accepted too.
+fn decode_send_outcome(raw: serde_json::Value) -> Result<SendOutcome> {
+    if let Some(cmd) = raw.get("command").filter(|c| c.is_object()) {
+        return Ok(SendOutcome::Command(serde_json::from_value(cmd.clone())?));
+    }
+    let duplicate = raw
+        .get("duplicate")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let msg = match raw.get("message").filter(|m| m.is_object()) {
+        Some(m) => m.clone(),
+        None => raw,
+    };
+    Ok(SendOutcome::Stored {
+        message: serde_json::from_value(msg)?,
+        duplicate,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_official_send_replies() {
+        let stored = decode_send_outcome(serde_json::json!({
+            "message": {"id": "m", "groupId": "g", "seq": 42, "senderId": "u",
+                        "body": "A: hi", "clientMessageId": "c", "createdAt": "2026-08-24T10:31:07.412Z"},
+            "duplicate": true
+        }))
+        .unwrap();
+        match stored {
+            SendOutcome::Stored { message, duplicate } => {
+                assert_eq!(message.seq, 42);
+                assert!(duplicate);
+            }
+            other => panic!("{other:?}"),
         }
-    }
-    if let Ok(m) = serde_json::from_value::<MessageDto>(v.clone()) {
-        return Ok(m);
-    }
-    // Minimal ack: need at least a seq or an id to be useful.
-    let obj = v.as_object().cloned().unwrap_or_default();
-    let seq = obj.get("seq").and_then(|x| x.as_i64());
-    let id = obj
-        .get("id")
-        .or_else(|| obj.get("messageId"))
-        .and_then(|x| x.as_str())
-        .map(str::to_owned);
-    match (id, seq) {
-        (Some(id), Some(seq)) => Ok(MessageDto {
-            id,
-            group_id: Some(group_id.to_owned()),
-            seq,
-            sender_id: obj
-                .get("senderId")
-                .and_then(|x| x.as_str())
-                .unwrap_or_default()
-                .to_owned(),
-            body: obj
-                .get("body")
-                .and_then(|x| x.as_str())
-                .unwrap_or(body)
-                .to_owned(),
-            client_message_id: Some(client_message_id.to_owned()),
-            created_at: obj
-                .get("createdAt")
-                .and_then(crate::models::epoch_ms_from_value),
-            extra: obj,
-        }),
-        _ => Err(AppError::Json(format!(
-            "send reply has no usable message (keys: {})",
-            v.as_object()
-                .map(|o| o.keys().cloned().collect::<Vec<_>>().join(","))
-                .unwrap_or_else(|| v.to_string())
-        ))),
+        let cmd = decode_send_outcome(serde_json::json!({
+            "command": {"name": "add", "ok": true, "code": "member_added",
+                        "params": {"phone": "+12125550117"}, "text": "Added Pat."}
+        }))
+        .unwrap();
+        match cmd {
+            SendOutcome::Command(c) => {
+                assert_eq!(c.code, "member_added");
+                assert_eq!(c.text, "Added Pat.");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
