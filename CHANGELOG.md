@@ -15,7 +15,7 @@ All notable changes to this project are documented here. The format follows
 - Dependency audit workflow (RustSec) and dependency review on pull requests.
 
 ### Changed
-- Moved to Tzibbur's official API contract (<https://api.tzibbur.me/integration>) and stopped the polling that loaded the server:
+- Moved to Tzibbur's official API and stopped the polling that loaded the server:
   - Delivery is push-only over the WebSocket. The 60-second sweep that paged every group's history and sent a REST ack per group, per account, is gone, as is the REST catch-up on every reconnect. A connected account now makes no periodic requests; `GET /v1/pending` is used only while the socket is down (at most every 5 minutes).
   - Socket batches are acked on the socket with their last seq, as the protocol requires; REST acks are only used for REST-pulled batches. Reading uses the new `read` frame / `POST /v1/groups/{id}/read` instead of an ack.
   - Group events are parsed in the official shape (fields at the top level, `settings` nested), so renames, joins, leaves and role changes reach Telegram again.

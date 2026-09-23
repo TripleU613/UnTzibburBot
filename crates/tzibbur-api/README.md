@@ -1,7 +1,7 @@
 # tzibbur-api
 
 Rust client for the **Tzibbur** group-messaging service (used by [UnTzibburBot](../../README.md)), built against
-Tzibbur's official contract: the [integration guide](https://api.tzibbur.me/integration) and the
+Tzibbur's official API (see the
 [OpenAPI spec](https://api.tzibbur.me/docs/openapi.json). How this crate uses it, and what it sends when, is in
 [`docs/tzibbur-api.md`](../../docs/tzibbur-api.md).
 
@@ -102,7 +102,7 @@ SessionManager ────────┘   (wipe on 401 → stop sync, clear D
 
 ## Wire notes
 
-The official guide is the reference. The models also accept a few older shapes seen
+The official API is the reference. The models also accept a few older shapes seen
 before it existed (bare message replies, nested `payload` on group frames, flat
 `whoCanPost` fields, uppercase enums, epoch-millisecond timestamps), so an older server
 or a mock still parses.

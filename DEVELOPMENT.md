@@ -31,8 +31,7 @@ Telegram topic  ──▶ handlers   ──▶ AccountRuntime ──▶ outbox �
 
 ## Tzibbur protocol notes
 
-Tzibbur publishes an official API contract: the integration guide at
-<https://api.tzibbur.me/integration> and the OpenAPI spec at
+Tzibbur publishes an official API; its OpenAPI spec is at
 <https://api.tzibbur.me/docs/openapi.json>. Those are authoritative; [`docs/tzibbur-api.md`](docs/tzibbur-api.md)
 only records how this client uses them. (The old decompiled notes in
 [`docs/android-app-notes.md`](docs/android-app-notes.md) are historical.) The points that bite:

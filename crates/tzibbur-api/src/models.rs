@@ -159,7 +159,7 @@ pub enum GroupKind {
     /// The Tzibbur Management thread (rules acknowledgement). Unlike `system`, the
     /// user replies in it.
     Rules,
-    /// Any kind this crate does not know. The official guide requires rendering it
+    /// Any kind this crate does not know. The official API requires rendering it
     /// as an ordinary group, never hiding it.
     #[default]
     Unknown,

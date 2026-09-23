@@ -1,0 +1,10 @@
+# cargo-audit configuration (read by the Security workflow).
+[advisories]
+ignore = [
+    # atomic-polyfill is unmaintained. Reached only through heapless/postcard, a
+    # build-time dependency of phonenumber (latest release); no vulnerability.
+    "RUSTSEC-2023-0089",
+    # proc-macro-error2 is unmaintained. Reached only through the aquamarine proc-macro
+    # used by teloxide (latest release) for docs; no vulnerability.
+    "RUSTSEC-2026-0173",
+]

@@ -1,5 +1,5 @@
 //! End-to-end test against an in-process mock of the Tzibbur API (REST + WS), modelled
-//! on the official protocol (<https://api.tzibbur.me/integration>): the socket pushes
+//! on the official protocol: the socket pushes
 //! the backlog after `hello`, holds the next batch for a group until the previous one
 //! is acked on the socket, and group frames carry their fields at the top level.
 
@@ -214,7 +214,7 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
     let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
     *m.push.lock().unwrap() = Some(tx);
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({"type": "hello", "protocolVersion": 1, "userId": "me", "deviceId": "dev1",
                 "limits": {"heartbeatSeconds": 30, "maxConnectionsPerDevice": 3, "maxFrameBytes": 16384}})
             .to_string(),
@@ -223,7 +223,7 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
         .unwrap();
     // Automatic catch-up: the first batch of the backlog, with more to come.
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({"type": "messages", "groupId": "g1", "hasMore": true, "messages": [
                 {"id": "m1", "groupId": "g1", "seq": 1, "senderId": "u2", "body": "Other: hello", "createdAt": 1000},
                 {"id": "m2", "groupId": "g1", "seq": 2, "senderId": "u2", "body": "Other: second", "createdAt": 2000}
@@ -235,12 +235,12 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
     let mut rest_of_backlog_sent = false;
     loop {
         tokio::select! {
-            Some(v) = rx.recv() => { if socket.send(Message::Text(v.to_string())).await.is_err() { break; } }
+            Some(v) = rx.recv() => { if socket.send(Message::text(v.to_string())).await.is_err() { break; } }
             msg = socket.recv() => match msg {
                 Some(Ok(Message::Text(t))) => {
                     let v: Value = serde_json::from_str(&t).unwrap();
                     match v["type"].as_str() {
-                        Some("ping") => { let _ = socket.send(Message::Text(json!({"type": "pong"}).to_string())).await; }
+                        Some("ping") => { let _ = socket.send(Message::text(json!({"type": "pong"}).to_string())).await; }
                         Some("ack") => {
                             let (g, seq) = (v["groupId"].as_str().unwrap().to_owned(), v["seq"].as_i64().unwrap());
                             m.acks.lock().unwrap().push((g.clone(), seq));
@@ -256,7 +256,7 @@ async fn ws_conn(mut socket: WebSocket, m: Mock) {
                                     json!({"type": "group", "event": "member-added", "groupId": "g1", "userId": "u9",
                                         "role": "member", "joinedSeq": 3, "actorId": "u2"}),
                                 ] {
-                                    let _ = socket.send(Message::Text(frame.to_string())).await;
+                                    let _ = socket.send(Message::text(frame.to_string())).await;
                                 }
                             }
                         }
@@ -288,16 +288,16 @@ async fn spawn_server() -> (String, Mock) {
         .route("/v1/auth/verify", post(auth_verify))
         .route("/v1/me", get(me))
         .route("/v1/groups", get(groups))
-        .route("/v1/groups/:id", get(group))
-        .route("/v1/groups/:id/members", get(members).post(add_members))
+        .route("/v1/groups/{id}", get(group))
+        .route("/v1/groups/{id}/members", get(members).post(add_members))
         .route(
-            "/v1/groups/:id/members/:uid",
+            "/v1/groups/{id}/members/{uid}",
             axum::routing::patch(set_role),
         )
-        .route("/v1/groups/:id/messages", post(send_message).get(history))
-        .route("/v1/groups/:id/ack", post(ack))
+        .route("/v1/groups/{id}/messages", post(send_message).get(history))
+        .route("/v1/groups/{id}/ack", post(ack))
         .route("/v1/pending", get(pending))
-        .route("/v1/legal/:key", get(legal))
+        .route("/v1/legal/{key}", get(legal))
         .route("/v1/ws", get(ws_route))
         .with_state(mock.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

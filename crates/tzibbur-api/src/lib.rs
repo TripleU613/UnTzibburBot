@@ -1,8 +1,7 @@
 //! # tzibbur-api
 //!
 //! Rust client for the Tzibbur group-messaging API, built against the official
-//! integration guide (<https://api.tzibbur.me/integration>) and OpenAPI spec
-//! (<https://api.tzibbur.me/docs/openapi.json>).
+//! OpenAPI spec (<https://api.tzibbur.me/docs/openapi.json>).
 //!
 //! Live delivery is push-only: one WebSocket per device, acked batch by batch. The
 //! crate makes no periodic REST requests while that socket is up.

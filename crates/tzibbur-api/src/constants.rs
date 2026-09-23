@@ -1,7 +1,6 @@
 //! Protocol constants and default limits.
 //!
-//! The limits are today's server defaults from the official integration guide
-//! (<https://api.tzibbur.me/integration>). The server can change them at any time,
+//! The limits are today's official server defaults. The server can change them at any time,
 //! so prefer what it reports (`Group.limits`, `GET /v1/capabilities`, `hello.limits`)
 //! and use these only as local fallbacks.
 

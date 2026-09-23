@@ -1,6 +1,5 @@
 //! REST client for the official Tzibbur API (`https://api.tzibbur.me/v1`), following
-//! the integration guide at <https://api.tzibbur.me/integration> and the OpenAPI spec
-//! at <https://api.tzibbur.me/docs/openapi.json>.
+//! the OpenAPI spec at <https://api.tzibbur.me/docs/openapi.json>.
 //!
 //! Every authenticated call sends `Authorization: Bearer {token}`. Errors are
 //! parsed from RFC 9457 bodies via [`AppError::from_problem`]. A 401 (or a 403
@@ -38,7 +37,7 @@ impl<F: Fn() + Send + Sync> SessionInvalidationListener for F {
 /// What the client reports at enrollment (`platform` and `deviceModel` on
 /// `POST /v1/auth/start` / `verify`, shown under `GET /v1/me/devices`).
 ///
-/// The official guide asks for an accurate, stable `deviceModel` (1–80 code
+/// The official API asks for an accurate, stable `deviceModel` (1–80 code
 /// points), never a per-request or random value. `platform` is one of `kosher`,
 /// `android`, `ios`, `web`; `web` sessions expire every 15 minutes and need a
 /// captcha, so a headless client should use a native platform.

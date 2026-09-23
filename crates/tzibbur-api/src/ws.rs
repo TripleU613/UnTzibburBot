@@ -1,6 +1,5 @@
 //! WebSocket protocol (`wss://api.tzibbur.me/v1/ws`, protocol version 1), as
-//! specified in §10 of the official integration guide
-//! (<https://api.tzibbur.me/integration>).
+//! specified by the official API.
 //!
 //! ```text
 //! Idle → Connecting → Connected ⟲ BackingOff
@@ -670,7 +669,7 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                         Some(f) => {
                             let txt = serde_json::to_string(&f).unwrap_or_default();
                             tracing::debug!(frame = %txt, "socket: -> outbound frame");
-                            if let Err(e) = sink.send(Message::Text(txt)).await {
+                            if let Err(e) = sink.send(Message::Text(txt.into())).await {
                                 reason = DisconnectReason::Error { cause: Some(e.to_string()) };
                                 break;
                             }
@@ -684,7 +683,7 @@ async fn run_loop(shared: Arc<Shared>, mut stop_rx: watch::Receiver<bool>) {
                 }
                 _ = tokio::time::sleep_until(tokio::time::Instant::from_std(ping_at)) => {
                     let txt = serde_json::to_string(&ClientFrame::Ping).unwrap_or_default();
-                    if let Err(e) = sink.send(Message::Text(txt)).await {
+                    if let Err(e) = sink.send(Message::Text(txt.into())).await {
                         reason = DisconnectReason::Error { cause: Some(e.to_string()) };
                         break;
                     }
