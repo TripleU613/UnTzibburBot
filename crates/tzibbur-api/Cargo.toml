@@ -42,5 +42,5 @@ features = ["std", "clock", "serde"]
 version = "0.10"
 
 [dev-dependencies.axum]
-version = "0.7"
+version = "0.8"
 features = ["ws", "json"]
