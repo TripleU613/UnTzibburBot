@@ -37,7 +37,7 @@ env:
 jobs:
   build-and-deploy:
     if: github.repository == 'TripleU613/UnTzibburBot'
-    runs-on: [self-hosted, linux, x64, debiantripleu-ci]
+    runs-on: debiantripleu-ci
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
