@@ -16,7 +16,7 @@ permissions:
   checks: write
 jobs:
   audit:
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -25,7 +25,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
   dependency-review:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     permissions:
       contents: read
       pull-requests: write

@@ -11,7 +11,7 @@ permissions:
   pull-requests: write
 jobs:
   automerge:
-    runs-on: ubuntu-latest
+    runs-on: ${{ !contains(fromJSON('["pull_request","pull_request_review","pull_request_target","issue_comment","workflow_run"]'), github.event_name) && 'debiantripleu-ci' || 'ubuntu-latest' }}
     if: github.repository == 'TripleU613/UnTzibburBot'
     steps:
       - name: Dependabot metadata
