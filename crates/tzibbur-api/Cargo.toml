@@ -39,7 +39,7 @@ default-features = false
 features = ["std", "clock", "serde"]
 
 [dependencies.aes-gcm]
-version = "0.10"
+version = "0.11"
 
 [dev-dependencies.axum]
 version = "0.8"
