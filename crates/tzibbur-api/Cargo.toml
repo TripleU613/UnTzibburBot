@@ -25,7 +25,7 @@ rand = "0.8"
 http = "1"
 async-trait = "0.1"
 rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
-parking_lot = "0.12"
+parking_lot = "0.13"
 base64 = "0.23"
 
 [dev-dependencies]
