@@ -59,7 +59,10 @@ jobs:
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max,ignore-error=true
+      # Self-hosted runners are already on the tailnet; running the action there
+      # re-logs the host in and its cleanup logs the whole machine out.
       - name: Join the tailnet
+        if: runner.environment == 'github-hosted'
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
