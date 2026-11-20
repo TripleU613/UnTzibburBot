@@ -1,8 +1,9 @@
 # Build the image on GitHub, then deploy to the production host over Tailscale SSH.
 # The host address is the repository variable DEPLOY_HOST (e.g. root@100.x.y.z).
 #
-# Secrets: only TS_AUTHKEY (a reusable, ephemeral, preauthorized Tailscale auth key
-# tagged tag:ci). Runtime secrets live in /opt/untzibburbot/.env on the host and are
+# Tailscale: GitHub OIDC (workload identity federation) - no stored auth key.
+# Repo variables TS_OAUTH_CLIENT_ID / TS_AUDIENCE name the federated credential
+# (tag:ci, subject repo:TripleU613/*); they are not secrets. Runtime secrets live in /opt/untzibburbot/.env on the host and are
 # never read by this workflow. Only pushes to main deploy.
 name: Deploy
 on:
@@ -29,6 +30,7 @@ concurrency:
 permissions:
   contents: read
   packages: write
+  id-token: write
 env:
   IMAGE: ghcr.io/tripleu613/untzibburbot
   # user@tailscale-ip of the host; set as a repository variable, never in the repo.
@@ -60,7 +62,8 @@ jobs:
       - name: Join the tailnet
         uses: tailscale/github-action@v4
         with:
-          authkey: ${{ secrets.TS_AUTHKEY }}
+          oauth-client-id: ${{ vars.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ vars.TS_AUDIENCE }}
           tags: tag:ci
           hostname: untz-deploy-${{ github.run_id }}
       - name: Ship compose files
