@@ -58,7 +58,7 @@ jobs:
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
       - name: Join the tailnet
         uses: tailscale/github-action@v4
         with:
